@@ -3228,6 +3228,7 @@
     "packages/tui/test/unit/cli-auth-command.test.ts",
     "packages/tui/test/unit/daily-checkin-application.test.ts",
     "packages/tui/test/unit/daily-checkin-http-gateway.test.ts",
+    "packages/tui/test/unit/embedded-host.test.ts",
     "packages/tui/test/unit/headless-config.test.ts",
     "packages/tui/test/unit/headless-contract.test.ts",
     "packages/tui/test/unit/headless-invocation.test.ts",
