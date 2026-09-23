@@ -2,7 +2,9 @@ import type { LocalCustomProviderConfig, LocalModelConfig } from '../contracts.j
 
 const CODEX_BASE_URL = 'https://chatgpt.com/backend-api';
 // Codex model discovery negotiates against the Codex client version, independent of our app version.
-const CODEX_CATALOG_CLIENT_VERSION = '0.153.0';
+// The backend only lists models released up to this client generation — bump it with the current
+// stable Codex CLI release or newer models (e.g. GPT-6 Sol/Luna) stay hidden.
+const CODEX_CATALOG_CLIENT_VERSION = '0.156.1';
 
 export interface CodexModelCredentials {
   access: string;
