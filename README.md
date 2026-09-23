@@ -102,6 +102,8 @@ Providers added this way are stored under `custom_provider` in the active profil
 
 </details>
 
+OpenAI Codex OAuth can be enabled experimentally with `beta.codexOAuth: true` in `config.yaml`; it signs in with a ChatGPT account instead of an API key. See [OpenAI Codex OAuth](docs/examples.md#openai-codex-oauth-experimental).
+
 ### 3. Run your first task
 
 Open the project you want to work on:

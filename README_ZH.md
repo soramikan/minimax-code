@@ -102,6 +102,8 @@ mcode
 
 </details>
 
+OpenAI Codex OAuth 为实验性功能，可在 `config.yaml` 中设置 `beta.codexOAuth: true` 启用；它使用 ChatGPT 账号登录，而非 API Key。详见 [OpenAI Codex OAuth](docs/examples.md#openai-codex-oauth-experimental)。
+
 ### 3. 完成第一个任务
 
 进入要处理的项目目录：
