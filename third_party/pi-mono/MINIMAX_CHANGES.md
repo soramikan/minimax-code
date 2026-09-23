@@ -13,6 +13,17 @@ This directory vendors `pi-mono` as source so MiniMax can patch, validate, and s
 
 No upstream source files are changed in the baseline import.
 
+### 2026-09-24 — backport Codex WebSocket resilience fixes
+
+- Reason: ChatGPT Codex WebSocket sessions failed mid-stream with a generic `WebSocket error` on long-lived sessions and under concurrent-connection pressure. Upstream fixed the known backend behaviors after the v0.79.1 import: the backend closes Codex WebSockets at a 60-minute connection age, rejects new connections with `websocket_connection_limit_reached` when the account limit is hit, and drops connection-scoped continuation state with `previous_response_not_found`.
+- Affected package: `packages/ai` (`@earendil-works/pi-ai`), OpenAI Codex Responses transport.
+- Change type: upstream backports, adapted to the v0.79.1 file layout (no behavioral divergence from upstream intent):
+  - `d0e0b84c` — reconnect once when `websocket_connection_limit_reached` arrives before stream output starts; read nested `error.code`/`error.message` from Codex `error` events via `extractCodexEventError`.
+  - `23d14626` — rotate cached WebSocket sessions at 55 minutes (`SESSION_WEBSOCKET_MAX_AGE_MS`) so the backend's 60-minute limit never kills a connection mid-turn.
+  - `c5dcb260` — retry once on `previous_response_not_found`; the stale cached entry is dropped, so the retry sends the full request body on a fresh connection. Moves `start` event emission into the stream function behind `startEmitted` so a retry after stream start cannot double-emit `start` (SSE path guards the same flag).
+- Upstream PR: already upstream (pi-mono main); these are cherry-picks of upstream fixes, not MiniMax-owned changes.
+- Validation: `packages/ai/test/openai-codex-stream.test.ts` extended with the upstream regression tests (connection-limit reconnect, connection-age rotation, missing-continuation recovery over both websocket and SSE) — 32 tests pass under `vitest`; `tsc --noEmit` clean for `packages/ai`.
+
 ### 2026-09-21 — report why the edit unified patch was omitted
 
 - Reason: the unified patch is a second, independently timed Myers run over the same input as the display diff. When only that run ran out of time, `details` held a diff, no patch, and no `diffOmitted` — consumers could not tell an omitted patch apart from a tool that never produces one.
