@@ -144,6 +144,10 @@ export async function createTuiRuntime(
     configPath,
     dependencies.readExplicitBetaFeature ?? readExplicitBetaFeatureFromFile,
   );
+  const codexOAuthConfigured = readCodexOAuthConfiguredValue(
+    configPath,
+    dependencies.readExplicitBetaFeature ?? readExplicitBetaFeatureFromFile,
+  );
   const getConfig = (): LocalRuntimeConfig => {
     const config = getSourceConfig();
     return {
@@ -478,6 +482,7 @@ export async function createTuiRuntime(
           ...hostOptions,
           ...(browserProvider ? { browserAdapter: browserProvider } : {}),
           productCapabilities: { mcodeTools: effectiveMcodeTools },
+          betaFeatureConfig: { codexOAuth: codexOAuthConfigured },
         },
         dependencies.factory,
       ),
@@ -616,6 +621,17 @@ function readBrowserUseToolingOptIn(
     return readFeature(configPath, 'browserUseTooling') === true;
   } catch {
     return false;
+  }
+}
+
+function readCodexOAuthConfiguredValue(
+  configPath: string,
+  readFeature: typeof readExplicitBetaFeatureFromFile,
+): boolean | undefined {
+  try {
+    return readFeature(configPath, 'codexOAuth');
+  } catch {
+    return undefined;
   }
 }
 

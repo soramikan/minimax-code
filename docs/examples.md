@@ -92,6 +92,26 @@ custom_provider:
 
 [Live acceptance](verification.md) separately verified MiniMax Token Plan and one configured BYOK provider. This is not a guarantee for every compatible service.
 
+### OpenAI Codex OAuth (experimental)
+
+MCode can sign in to OpenAI Codex with a ChatGPT account. This is an experimental beta feature: it is hidden by default in standard builds and must be enabled explicitly in the active profile's `config.yaml`:
+
+```yaml
+beta:
+  codexOAuth: true
+```
+
+Set the value to `false` to disable it again. Disabling the feature only hides the provider; stored credentials are kept, so re-enabling reuses the existing sign-in.
+
+With the feature enabled, open `/provider`, choose **OpenAI Codex**, and pick a sign-in method:
+
+- **Browser login** opens an OpenAI authorization page and completes on a local callback.
+- **Device code login** shows a verification URL and user code to approve from another device, which also works on headless or SSH sessions.
+
+This is account OAuth, not an API key; do not enter an OpenAI API key here — use a `custom_provider` entry for key-based endpoints. After sign-in, MCode discovers the Codex models available to the account and lists them under `custom_provider:openai-codex`; pick one with `/model`. Disconnecting the provider signs out and removes the stored credential.
+
+Credentials live in MCode's own data directory as `codex-auth.json` (see [Accounts and data](installation.md#accounts-and-data)). The Codex CLI credential file `~/.codex/auth.json` is not read or shared; both tools keep independent sign-ins. Access tokens refresh automatically.
+
 ## 3. Search and image input
 
 For a custom BYOK model, declare image input support explicitly when adding the

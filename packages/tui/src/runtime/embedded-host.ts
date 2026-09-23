@@ -20,6 +20,16 @@ export type EmbeddedRuntimeHostOptions = Omit<
   productCapabilities?: {
     mcodeTools: boolean;
   };
+  betaFeatureConfig?: {
+    /**
+     * Raw `beta.codexOAuth` entry before default resolution. `resolveBetaFeature`
+     * cannot see the TUI build variant, so the embedded host applies the
+     * internal-build default itself while an explicit `false` remains a kill
+     * switch. Other builds keep the config-resolved value, which already honors
+     * the explicit `beta.codexOAuth: true` opt-in.
+     */
+    codexOAuth?: boolean;
+  };
 };
 
 export type EmbeddedRuntimeHostFactory = (
@@ -36,6 +46,7 @@ export function projectEmbeddedRuntimeConfig(
   config: EmbeddedRuntimeConfig,
   buildIdentity: Pick<ProductBuildIdentity, 'isInternalBuild'> = resolveMcodeBuildIdentity(),
   mcodeToolsEnabled = false,
+  codexOAuthConfigured?: boolean,
 ): EmbeddedRuntimeConfig {
   return {
     ...config,
@@ -48,7 +59,12 @@ export function projectEmbeddedRuntimeConfig(
     },
     beta: {
       ...config.beta,
-      codexOAuth: buildIdentity.isInternalBuild,
+      // `resolveBetaFeature` cannot see the TUI build variant, so the
+      // internal-build default is applied here. Everywhere else the
+      // config-resolved value already reflects the explicit opt-in/opt-out.
+      codexOAuth: buildIdentity.isInternalBuild
+        ? codexOAuthConfigured !== false
+        : config.beta?.codexOAuth === true,
       mcodeTools: mcodeToolsEnabled && config.beta?.mcodeTools === true,
     },
     memory: {
@@ -67,7 +83,7 @@ export async function createEmbeddedRuntimeHost(
       'Minimax Code embedded Runtime requires the local-runtime-v2 front door; legacy fallback is disabled.',
     );
   }
-  const { productCapabilities, ...runtimeOptions } = options;
+  const { productCapabilities, betaFeatureConfig, ...runtimeOptions } = options;
   const configGetter = runtimeOptions.configGetter ?? getDefaultLocalRuntimeConfig;
   const host = await factory({
     ...runtimeOptions,
@@ -80,6 +96,7 @@ export async function createEmbeddedRuntimeHost(
         configGetter(),
         resolveMcodeBuildIdentity(),
         productCapabilities?.mcodeTools === true,
+        betaFeatureConfig?.codexOAuth,
       ),
     runtimeOwnerKind: 'tui',
     runtimeMode: 'clean',
