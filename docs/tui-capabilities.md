@@ -21,6 +21,34 @@ The evidence column summarizes the historical TUI 0.3.11 restoration record from
 | Files, shell, subagents, sessions, headless, ACP | Actual runtime retained | BYOK, file reads, session resume, ACP, sandbox, and status protocol tests |
 | Built-in skills, MCP, plugin tools | Original TUI assets and activation conditions retained | Asset build, plugin, and MCP tests; no claim that every skill has passed a real task |
 
+## Local Bash execution
+
+When the current turn includes native `task_output`, foreground Bash waits up to
+60 seconds before returning the same command's background task ID. Its total
+command timeout defaults to 600 seconds and is capped at 600 seconds; a shorter
+requested timeout applies. Backgrounding and output reads preserve the original
+deadline. Without native `task_output`, Bash stays in the foreground with a
+120-second default and a 300-second cap, and its schema omits `run_in_background`.
+Explicit background commands use the requested timeout; when omitted, the
+existing 30-minute runtime watchdog applies.
+
+Only exit code zero is success. Results retain available exit, signal, timeout,
+cancellation, and partial-output facts. Large output keeps its original beginning
+and end within a 24 KiB first-response text budget, with a full-log reference when
+persistence succeeds. `task_output` reads use byte offsets; a successful read can
+report a failed command. Stop failures and incomplete logs are reported separately.
+An optional `description` supplies the TUI summary while execution and permission
+checks continue to use the original command.
+
+## Skill directory links
+
+Workspace `.agents/skills`, `.claude/skills`, and `.minimax/skills` support
+directory symlinks, both for the entire skill root and for individual skill
+directories. Targets may live outside the workspace. Existing external-source
+enable settings and duplicate-name priority still apply. Linked directories are
+watched for `SKILL.md` creation and edits; broken links are skipped. `SKILL.md`
+itself must remain a regular file.
+
 ## ACP Skill commands
 
 ACP clients receive enabled Skills alongside built-in slash commands when a session
@@ -85,8 +113,16 @@ and initial prompt are not applied.
 
 In regular mode, independent feature panels occupy the complete visible terminal
 area, including short Rewind previews and scope pickers. Closing a panel restores
-the current conversation. When running content shrinks entirely within the current
-screen, the renderer keeps native scrollback and the Composer position stable.
+the current conversation. Closing, replacing or shrinking a transient region
+restores the exposed chat rows. This includes inline selectors such as `/theme`,
+completion menus, multi-line drafts, image previews, queued messages, task and
+Goal summaries, welcome notices and status rows. Short documents refresh in place;
+history is reconstructed only when the smaller layout needs to bring scrolled
+rows back into view. This rule follows the rendered layout, including asynchronous
+updates, rather than requiring each close handler to request a special redraw.
+When background running content shrinks entirely within the current screen and
+the transient layout stays unchanged, the renderer keeps native scrollback and
+the Composer position stable.
 Freed rows temporarily remain blank at the top of the active screen and subsequent
 output reuses them. This avoids resetting the host's scroll position when a turn
 finishes. Redundant resize notifications with unchanged dimensions do not rebuild
@@ -124,3 +160,26 @@ existing diagnostic-counts projection; raw error text, stacks and session IDs
 are not added to the uploaded ZIP. Offline tests cover persisted tool histories,
 archives, concurrent parent output, side-session cleanup and local diagnostics;
 this does not establish native-terminal or live-model acceptance.
+
+## Select a plugin for a message
+
+Type `@` in the Composer to search files and installed, enabled plugins. Plugin
+candidates show their source so packages with the same display name can be
+selected independently. Choose a plugin with Tab or Enter, then describe the task.
+The Composer shows `@Name` and retains the plugin identity through editing, undo,
+prompt history, queued-message recovery, saved drafts, and `/edit` after a
+message is sent. Ctrl+C clearing/restoration and external-editor edits retain
+unchanged plugin bindings. If external edits make duplicate labels ambiguous,
+reselect those plugins in the Composer. Displayed messages remain readable; Runtime retains
+the original input separately when needed to recover the plugin identity for editing.
+
+Selection applies to that message. Runtime checks the plugin's effective Skills,
+MCP tools, and App tools again for the turn and asks the Agent to prefer relevant
+capabilities. Selecting a plugin does not install or enable it. An unavailable
+selection is reported to the Agent rather than redirected to a same-named package.
+
+Exec and ACP text prompts can use the durable linked form, for example
+`[@Notes](plugin://notes%40local) summarize these files`. The ID is the package
+name plus its `local` or `official` source; display labels do not determine the
+selection. Legacy whitespace-delimited `@package-name` text remains supported
+when it identifies exactly one effective plugin.

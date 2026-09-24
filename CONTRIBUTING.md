@@ -6,6 +6,8 @@ Thanks for your interest in contributing. For now, we only accept code and docum
 
 Repository collaborators should submit pull requests from feature branches; do not push directly to the default branch. Describe user-visible changes, checks you ran, live-service or platform validation you did not run, and documentation impact. Preserve real author identities and existing copyright notices.
 
+Apply the relevant change-type and product labels using the [pull request label guide](docs/maintainers.md#pull-request-labels). Add `perf:full` separately when the [performance rules](#performance-checks) require the full suite.
+
 ## Maintainers and review
 
 See [Maintainers](docs/maintainers.md) for review ownership, independent approval, security/release routing and the public-to-internal contribution flow. The [PR template](.github/PULL_REQUEST_TEMPLATE.md) records checks, untested boundaries and permission to contribute under the existing applicable licenses. CODEOWNERS routes reviews; required checks and approvals must also be enabled in repository settings.
@@ -38,6 +40,8 @@ pnpm verify
 ```
 
 `pnpm verify` runs the complete gate list in the same order as GitHub CI. Normal PR and main-branch checks use Node.js 24 on Linux and macOS. The Linux job runs the full profile; the macOS job uses `pnpm verify --profile platform`, which omits only the duplicate TypeScript compiler check. Windows runs the focused `pnpm verify --profile windows` contract on PRs; the profile is Windows-only and fails closed elsewhere. It checks source inventory, release tooling, build boundaries, artifacts, and Windows-specific tests without running the full capability suite. Gates that depend on platform behaviour are selected by platform rather than skipped silently; run `pnpm verify --list`, `pnpm verify --profile platform --list`, or `pnpm verify --profile windows --list` to inspect each plan. Individual gates remain available as their own scripts, such as `pnpm typecheck` or `pnpm test:byok`, while you iterate.
+
+`pnpm lint` (or `pnpm lint:tui`) checks TUI source and tests with the source repository's Airbnb, TypeScript, import and Prettier rules. Errors fail verification; formatting, unused variables and explicit `any` remain warnings, matching the source policy. The scripts use `--quiet` to keep existing warning debt out of CI logs; omit it when invoking ESLint directly to inspect warnings. The audited Pi engine retains its narrow style exceptions; its public facade uses the normal rules. Vendored Pi test copies are excluded. Full, platform, archive and Windows verification include this gate; docs and package-installation profiles do not.
 
 CI writes per-gate timing and exit metadata to the Job Summary and a seven-day `verification-<os>-node-<version>-<attempt>` artifact. For a local report, set `MCODE_VERIFY_REPORT_DIR` to a directory outside the repository. Reports distinguish `PASS`, `FAIL`, intentional `SKIP`, and `NOT_RUN` after a failure. JSON is checkpointed before and after each gate; a cancelled run may leave `RUNNING`, which is not a pass. If installation fails before verification starts, no verification report is available. Reports do not collect command output, environment variables, or runtime data; read the corresponding gate's job log for failure details, including the existing bounded BYOK timeout diagnostics. CI jobs have a 15-minute verification limit and a 10-minute release-audit limit.
 

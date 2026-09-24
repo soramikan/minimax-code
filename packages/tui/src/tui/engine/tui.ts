@@ -28,6 +28,13 @@ export interface Component {
 	render(width: number): string[];
 
 	/**
+	 * Opt into preserving native scrolling when only background content shrinks.
+	 * Return a key for the last rendered transient layout (menus, editor, banners).
+	 * A changed or missing key restores exposed document rows instead of padding.
+	 */
+	getViewportLayoutKey?(): string | undefined;
+
+	/**
 	 * Optional handler for keyboard input when component has focus
 	 */
 	handleInput?(data: string): void;
@@ -904,10 +911,13 @@ export abstract class TuiBase extends Container implements TUI {
 			if (isKeyRelease(data) && !this.focusedComponent.wantsKeyRelease) {
 				return;
 			}
-			this.focusedComponent.handleInput(data);
 			// Keyboard input is latency-sensitive. Avoid the throttled timer path,
 			// where even setTimeout(0) can take a full 16 ms tick on Windows.
 			this.requestImmediateRender();
+			// A submission may render synchronously to dismiss a previous turn's
+			// footer. In that case renderNow clears this pending request, avoiding
+			// a second full render on the next tick.
+			this.focusedComponent.handleInput(data);
 		}
 	}
 

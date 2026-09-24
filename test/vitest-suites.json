@@ -5,6 +5,7 @@
       "test/windows-contract.test.mjs"
     ],
     "capability": [
+      "packages/local-runtime/test/unit/skill-directory-symlinks.test.ts",
       "packages/agent-core/test/unit/bash-subprocess-env.test.ts",
       "packages/agent-modules/permission/test/unit/permission/bash-policy-regressions.test.ts",
       "packages/agent-tools/src/shared/replace-all-edit.test.ts",
@@ -57,6 +58,7 @@
       "packages/local-runtime-v2/src/service/model-system/catalog/agent-model-selection.test.ts",
       "packages/local-runtime-v2/src/service/model-system/catalog/catalog.test.ts",
       "packages/local-runtime-v2/src/service/model-system/catalog/list-models.test.ts",
+      "packages/local-runtime-v2/src/service/model-system/catalog/model-favorites.test.ts",
       "packages/local-runtime-v2/src/service/model-system/catalog/model-selection.test.ts",
       "packages/local-runtime-v2/src/service/model-system/catalog/provider-presets/provider-presets.service.test.ts",
       "packages/local-runtime-v2/src/service/model-system/connectivity/discover-models.test.ts",
@@ -150,6 +152,7 @@
       "packages/tui/test/unit/tui/controller/product/chrome-flow.test.ts",
       "packages/tui/test/unit/tui/controller/product/command-flow.test.ts",
       "packages/tui/test/unit/tui/controller/product/feature-flow.test.ts",
+      "packages/tui/test/unit/tui/controller/run/turn-submission-retainer.test.ts",
       "packages/tui/test/unit/tui/features/settings/hotkeys-picker.test.ts",
       "packages/tui/test/unit/incident-reporter-privacy.test.ts",
       "packages/config/test/config-file-permissions.test.ts",
@@ -173,7 +176,9 @@
       "packages/tui/test/unit/tui/features/settings/theme-picker.test.ts",
       "packages/tui/test/unit/tui/theme/custom-themes.test.ts",
       "packages/tui/test/unit/tui/theme/palettes.test.ts",
-      "packages/tui/test/unit/tui/theme/runtime.test.ts"
+      "packages/tui/test/unit/tui/theme/runtime.test.ts",
+      "packages/tui/test/unit/tui-plugin-mentions.test.ts",
+      "packages/local-runtime-v2/src/service/turn-system/agent-host/assembly/local-turn-plugin-capabilities.test.ts"
     ],
     "status-contract": [
       "packages/tui/test/unit/tui-build-mode-contract.test.ts"

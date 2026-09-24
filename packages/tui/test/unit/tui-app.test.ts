@@ -13,6 +13,7 @@ import { resolveTuiStartupEnvironmentOption } from "../../src/cli/environment.js
 import { runTuiCli } from "../../src/cli/main.js";
 import { launchTui } from "../../src/tui/launcher.js";
 import { createTuiApp } from "../../src/tui/app.js";
+import { TuiChatLayout } from "../../src/tui/shell/chat-layout.js";
 import type {
   TuiModel,
   TuiQuestionnaireRequest,
@@ -185,6 +186,13 @@ class FakeTerminal implements Terminal {
   setTitle(title: string): void {
     this.title = title;
     this.titleUpdates.push(title);
+  }
+}
+
+// Apple Terminal can save ED 2 clears into scrollback before the renderer clears history.
+class ClearToScrollbackTerminal extends VirtualTerminal {
+  override write(data: string): void {
+    super.write(data.replaceAll("\x1b[2J", `\x1b[${this.rows};1H${"\r\n".repeat(this.rows)}\x1b[2J`));
   }
 }
 
@@ -517,6 +525,91 @@ function createRuntime(): TuiRuntime {
 }
 
 describe("createTuiApp", () => {
+  it("force-follows user submissions, /new, and Session transitions", async () => {
+    const forceFollowBottom = vi.spyOn(TuiChatLayout.prototype, "forceFollowBottom");
+    const app = createTuiApp({
+      runtime: createRuntime(),
+      terminal: new FakeTerminal(),
+      version: "test",
+      workspaceDir: "/workspace",
+    });
+    app.start();
+
+    try {
+      await app.ready;
+      await app.openSession("session-1");
+
+      forceFollowBottom.mockClear();
+      await app.submit("Continue with the next step");
+      await vi.waitFor(() => expect(forceFollowBottom).toHaveBeenCalled());
+
+      forceFollowBottom.mockClear();
+      await app.submit("/new");
+      expect(forceFollowBottom).toHaveBeenCalled();
+
+      forceFollowBottom.mockClear();
+      await app.openSession("session-2");
+      expect(forceFollowBottom).toHaveBeenCalled();
+    } finally {
+      await app.stop();
+      forceFollowBottom.mockRestore();
+    }
+  });
+
+  it("re-arms follow-tail when a follow-up is accepted into the queue", async () => {
+    let releaseRun: (() => void) | undefined;
+    const runGate = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const runtime = createRuntime();
+    vi.mocked(runtime.sendMessage).mockImplementation(
+      async function* pendingRun() {
+        yield {
+          type: "delta",
+          turnId: "turn-pending",
+          role: "assistant",
+          content: "Working",
+        };
+        await runGate;
+        yield { type: "done", turnId: "turn-pending" };
+      },
+    );
+    const forceFollowBottom = vi.spyOn(TuiChatLayout.prototype, "forceFollowBottom");
+    const app = createTuiApp({
+      runtime,
+      terminal: new FakeTerminal(),
+      version: "test",
+      workspaceDir: "/workspace",
+      productFeatures: { queue: true },
+    });
+    app.start();
+
+    try {
+      await app.ready;
+      const firstSubmission = app.submit("Start the live run");
+      await vi.waitFor(() =>
+        expect(app.controller.snapshot().status).toBe("running"),
+      );
+
+      forceFollowBottom.mockClear();
+      await app.submit("Queue the follow-up");
+
+      expect(runtime.enqueueMessage).toHaveBeenCalledWith(
+        "session-1",
+        "Queue the follow-up",
+        expect.objectContaining({ attachments: [] }),
+      );
+      expect(forceFollowBottom).toHaveBeenCalled();
+
+      releaseRun?.();
+      await firstSubmission;
+    } finally {
+      releaseRun?.();
+      await app.stop();
+      forceFollowBottom.mockRestore();
+    }
+  });
+
   it.each(["regular", "fullscreen"] as const)(
     "configures /statusline from terminal input and reopens the saved selection in %s mode",
     async (tuiMode) => {
@@ -689,6 +782,11 @@ describe("createTuiApp", () => {
   it("runs an editor ! command locally and carries its result into the next model message", async () => {
     const directory = await mkdtemp(join(tmpdir(), "tui-bash-app-"));
     const runtime = createRuntime();
+    const followBottom = vi.spyOn(TuiChatLayout.prototype, "followBottom");
+    const forceFollowBottom = vi.spyOn(
+      TuiChatLayout.prototype,
+      "forceFollowBottom",
+    );
     const app = createTuiApp({
       runtime,
       terminal: new FakeTerminal(),
@@ -697,6 +795,8 @@ describe("createTuiApp", () => {
     });
     try {
       await app.ready;
+      followBottom.mockClear();
+      forceFollowBottom.mockClear();
       app.editor.setText(
         process.platform === "win32"
           ? "!Write-Output shell-result"
@@ -716,6 +816,8 @@ describe("createTuiApp", () => {
           ).toBe(true),
         { timeout: 5000 },
       );
+      expect(followBottom).toHaveBeenCalled();
+      expect(forceFollowBottom).not.toHaveBeenCalled();
       expect(runtime.sendMessage).not.toHaveBeenCalled();
       expect(
         app.transcript
@@ -734,6 +836,8 @@ describe("createTuiApp", () => {
       );
     } finally {
       await app.stop();
+      followBottom.mockRestore();
+      forceFollowBottom.mockRestore();
       await rm(directory, { recursive: true, force: true });
     }
   });
@@ -1878,7 +1982,7 @@ describe("createTuiApp", () => {
 
       const starting = app.tui.render(80).join("\n");
       expect(starting).toContain("⠋ Starting server...");
-      expect(starting).not.toContain("Start · @ file · / autocomplete");
+      expect(starting).not.toContain("Start · @ file or Plugin · / autocomplete");
       expect(starting).not.toContain("Loading session");
 
       releaseSessions?.();
@@ -1886,7 +1990,7 @@ describe("createTuiApp", () => {
       app.setStartupStatus(undefined);
 
       expect(app.tui.render(80).join("\n")).toContain(
-        "Start · @ file · / autocomplete",
+        "Start · @ file or Plugin · / autocomplete",
       );
     } finally {
       releaseSessions?.();
@@ -2864,6 +2968,7 @@ describe("createTuiApp", () => {
 
     app.start();
     await app.ready;
+    const writesBefore = terminal.writes.length;
     terminal.input?.("/");
 
     await vi.waitFor(() =>
@@ -2879,6 +2984,7 @@ describe("createTuiApp", () => {
     terminal.input?.("\u001B");
     expect(app.editor.getText()).toBe("/");
     expect(app.editor.focused).toBe(true);
+    expect(terminal.writes.slice(writesBefore).join("")).not.toContain("\x1b[3J");
 
     await app.stop();
   });
@@ -2920,6 +3026,83 @@ describe("createTuiApp", () => {
 
     screen.dispose();
     await app.stop();
+  });
+
+  describe.each([
+    ["xterm", VirtualTerminal],
+    ["clear-to-scrollback terminal", ClearToScrollbackTerminal],
+  ] as const)("autocomplete viewport restoration on %s", (_terminalName, Terminal) => {
+    it.each([
+      ["Escape", "\x1b", "/"],
+      ["Tab", "\t", "/help "],
+      ["Backspace", "\x7f", ""],
+      ["no matches", "zzzzzz", "/zzzzzz"],
+      ["filter to one command", "help", "/help"],
+    ] as const)("restores the conversation viewport when Slash Command autocomplete shrinks via %s", async (_name, input, draft) => {
+      const terminal = new Terminal(80, 24);
+      const app = createTuiApp({
+        runtime: createRuntime(),
+        terminal,
+        version: "0.2.0",
+        workspaceDir: "/workspace",
+        tuiMode: "regular",
+      });
+
+      app.start();
+      try {
+        await app.ready;
+        for (let index = 0; index < 12; index++) await app.submit(`Message ${index}`);
+        app.tui.renderNow();
+        await terminal.flush();
+
+        terminal.sendInput("/");
+        await vi.waitFor(async () => {
+          app.tui.renderNow();
+          await terminal.flush();
+          expect(terminal.getViewport().join("\n")).toContain("Show available commands");
+        });
+        const menuRows = app.editor.render(78).length;
+        terminal.sendInput(input);
+        await vi.waitFor(async () => {
+          app.tui.renderNow();
+          await terminal.flush();
+          expect(app.editor.getText()).toBe(draft);
+          expect(app.editor.render(78).length).toBeLessThan(menuRows);
+          const expected = app.tui.render(80).map((line) => stripAnsi(line).trimEnd()).slice(-24);
+          expect(terminal.getViewport().map((line) => line.trimEnd())).toEqual(expected);
+        });
+        const history = terminal.getScrollBuffer();
+        for (let index = 0; index < 12; index++) {
+          expect(history.filter((line) => line.trimEnd().endsWith(`› Message ${index}`))).toHaveLength(1);
+        }
+      } finally {
+        await app.stop();
+      }
+    });
+  });
+
+  it("dismisses autocomplete in a short document without clearing native history", async () => {
+    const terminal = new VirtualTerminal(80, 100);
+    const app = createTuiApp({ runtime: createRuntime(), terminal, version: "0.2.0", workspaceDir: "/workspace" });
+    const write = vi.spyOn(terminal, "write");
+    app.start();
+    try {
+      await app.ready;
+      terminal.sendInput("/");
+      await vi.waitFor(async () => {
+        app.tui.renderNow();
+        await terminal.flush();
+        expect(terminal.getViewport().join("\n")).toContain("Show available commands");
+      });
+      write.mockClear();
+      terminal.sendInput("\x1b");
+      app.tui.renderNow();
+      await terminal.flush();
+      expect(terminal.getViewport().join("\n")).not.toContain("Show available commands");
+      expect(write.mock.calls.map(([data]) => data).join("")).not.toContain("\x1b[3J");
+    } finally {
+      await app.stop();
+    }
   });
 
   it("resumes fullscreen tail following when submitting from scrolled history", async () => {
@@ -3372,6 +3555,93 @@ describe("createTuiApp", () => {
     expect(compact).not.toContain("Details collapsed");
 
     await app.stop();
+  });
+
+  it.each(["rewind", "edit"] as const)(
+    "removes discarded todos after /history %s",
+    async (action) => {
+      const terminal = new FakeTerminal();
+      const runtime = createRuntime();
+      vi.mocked(runtime.listSessionInputSummaries).mockResolvedValue([
+        { userMessageId: "before-todo", timestamp: 1, fileChangeCount: 0 },
+      ]);
+      vi.mocked(runtime.listMessagePage).mockResolvedValue({
+        messages: [{ id: "before-todo", role: "user", content: "Original prompt" }],
+        hasMore: false,
+      });
+      const app = createTuiApp({ runtime, terminal, version: "0.1.0", workspaceDir: "/workspace" });
+      app.start();
+      try {
+        await app.ready;
+        await app.submit("Seed todo session");
+        app.controller.applyRuntimeTurnEvent("discarded-turn", {
+          type: "generic",
+          eventType: "todo_updated",
+          turnId: "discarded-turn",
+          data: { todos: [{ content: "Discarded todo", status: "in_progress" }] },
+        });
+        expect(stripAnsi(app.tui.render(100).join("\n"))).toContain("Discarded todo");
+        await app.submit("/history");
+        await vi.waitFor(() =>
+          expect(app.surfaceHost.getActiveSurface().id).toBe("session-history:explorer"),
+        );
+        terminal.input?.("\r");
+        terminal.input?.("\x1b[B");
+        if (action === "rewind") terminal.input?.("\x1b[B");
+        terminal.input?.("\r");
+        await vi.waitFor(() =>
+          expect(app.surfaceHost.getActiveSurface().id).toBe(
+            action === "rewind"
+              ? "session-mutation:rewind-confirm"
+              : "session-mutation:rewind-preview",
+          ),
+        );
+        terminal.input?.("\r");
+        if (action === "edit") {
+          await vi.waitFor(() => expect(app.editor.getText()).toBe("Original prompt"));
+          await app.submit("Revised prompt");
+          expect(runtime.editSessionMessage).toHaveBeenCalledOnce();
+        } else {
+          await vi.waitFor(() => expect(runtime.rewindSession).toHaveBeenCalledOnce());
+        }
+        await vi.waitFor(() => expect(app.surfaceHost.getActiveSurface().kind).toBe("chat"));
+        expect(stripAnsi(app.tui.render(100).join("\n"))).not.toContain("Discarded todo");
+      } finally {
+        await app.stop();
+      }
+    },
+  );
+
+  it.each([false, true])("handles exact /rewind locally while editing=%s", async (editing) => {
+    const terminal = new FakeTerminal();
+    const runtime = createRuntime();
+    vi.mocked(runtime.listSessionInputSummaries).mockResolvedValue([
+      { userMessageId: "before-todo", timestamp: 1, fileChangeCount: 0 },
+    ]);
+    vi.mocked(runtime.listMessagePage).mockResolvedValue({
+      messages: [{ id: "before-todo", role: "user", content: "Original prompt" }],
+      hasMore: false,
+    });
+    const app = createTuiApp({ runtime, terminal, version: "0.1.0", workspaceDir: "/workspace" });
+    app.start();
+    try {
+      await app.ready;
+      await app.submit("Seed session");
+      if (editing) {
+        await app.submit("/edit");
+        await vi.waitFor(() => expect(app.editor.getText()).toBe("Original prompt"));
+      }
+      const sends = vi.mocked(runtime.sendMessage).mock.calls.length;
+      app.editor.setText("/rewind");
+      app.editor.handleInput("\r");
+      await vi.waitFor(() =>
+        expect(app.surfaceHost.getActiveSurface().id).toBe("session-mutation:history"),
+      );
+      expect(runtime.editSessionMessage).not.toHaveBeenCalled();
+      expect(runtime.sendMessage).toHaveBeenCalledTimes(sends);
+    } finally {
+      await app.stop();
+    }
   });
 
   it("uses Ctrl+T for tasks while Ctrl+O remains scoped to transcript details", async () => {
@@ -5942,6 +6212,153 @@ describe("createTuiApp", () => {
     );
 
     await app.stop();
+  });
+
+  it.each(["/theme", "/settings", "history search"])("restores the complete chat viewport after closing %s", async (entry) => {
+    const terminal = new VirtualTerminal(80, 24);
+    const app = createTuiApp({ runtime: createRuntime(), terminal, version: "0.2.0", workspaceDir: "/workspace" });
+    app.start();
+    try {
+      await app.ready;
+      for (let index = 0; index < 12; index++) await app.submit(`Message ${index}`);
+      if (entry === "history search") {
+        for (let index = 0; index < 12; index++) app.editor.addToHistory(`Message ${index}`);
+        terminal.sendInput("\x12");
+      }
+      else await app.submit(entry);
+      app.tui.renderNow();
+      await terminal.flush();
+      expect(app.interaction.isActive()).toBe(true);
+      terminal.sendInput("\x1b");
+      app.tui.renderNow();
+      await terminal.flush();
+      expect(app.interaction.isActive()).toBe(false);
+      const expected = app.tui.render(80).map((line) => stripAnsi(line).trimEnd()).slice(-24);
+      expect(terminal.getViewport().map((line) => line.trimEnd())).toEqual(expected);
+      for (let index = 0; index < 12; index++) {
+        expect(terminal.getScrollBuffer().filter((line) => line.trimEnd().endsWith(`› Message ${index}`))).toHaveLength(1);
+      }
+    } finally {
+      await app.stop();
+    }
+  });
+
+  it.each(["multiline draft", "image preview"])("restores the chat viewport after dismissing %s", async (kind) => {
+    const terminal = new ClearToScrollbackTerminal(80, 24);
+    const app = createTuiApp({
+      runtime: createRuntime(), terminal, version: "0.2.0", workspaceDir: "/workspace",
+      resolveAttachment: async () => ({ type: "image", filePath: "/tmp/preview-missing.png", fileName: "preview.png", mimeType: "image/png", sizeBytes: 32768 }),
+    });
+    app.start();
+    try {
+      await app.ready;
+      for (let index = 0; index < 12; index++) await app.submit(`Message ${index}`);
+      if (kind === "multiline draft") {
+        app.editor.setText(Array.from({ length: 8 }, (_, index) => `Draft ${index}`).join("\n"));
+      } else {
+        terminal.sendInput("\x1b[200~/tmp/preview-missing.png\x1b[201~");
+        await vi.waitFor(() => expect(app.editor.getAttachmentPreview()).toBeDefined());
+      }
+      app.tui.renderNow();
+      await terminal.flush();
+      expect(terminal.getViewport().join("\n")).toContain(kind === "multiline draft" ? "Draft 7" : "preview.png");
+      terminal.sendInput(kind === "multiline draft" ? "\x03" : "\x1b");
+      app.tui.renderNow();
+      await terminal.flush();
+      if (kind === "multiline draft") expect(app.editor.getText()).toBe("");
+      else expect(app.editor.getAttachmentPreview()).toBeUndefined();
+      const expected = app.tui.render(80).map((line) => stripAnsi(line).trimEnd()).slice(-24);
+      expect(terminal.getViewport().map((line) => line.trimEnd())).toEqual(expected);
+    } finally {
+      await app.stop();
+    }
+  });
+
+  it("does not push the conversation downward after closing /usage", async () => {
+    const terminal = new VirtualTerminal(80, 50);
+    const runtime = createRuntime();
+    vi.mocked(runtime.getAccountStatus).mockResolvedValue({
+      status: "ready",
+      authMode: "managed-login",
+      managedTokenPresent: true,
+      modelSource: "token-plan",
+      tokenPlanQuotaState: "available",
+      tokenPlanSummary: { tier: "Ultra Plan", creditBalance: "100" },
+      tokenPlanQuota: {
+        fiveHour: { remainingPercent: 75, unlimited: false },
+        weekly: { remainingPercent: 50, unlimited: false },
+        video: { remainingCount: 5, totalCount: 5, unlimited: false },
+      },
+      warnings: [],
+    });
+    const app = createTuiApp({
+      runtime,
+      terminal,
+      version: "0.1.0",
+      workspaceDir: "/workspace",
+    });
+
+    app.start();
+    try {
+      await app.ready;
+      for (let index = 0; index < 2; index++) await app.submit(`Message ${index}`);
+      app.tui.renderNow();
+      await terminal.flush();
+      expect(terminal.getViewport().join("\n")).toContain("Message 1");
+      const firstContentRowBefore = terminal.getViewport().findIndex((line) => line.trim().length > 0);
+
+      await app.submit("/usage");
+      app.tui.renderNow();
+      await terminal.flush();
+      expect(terminal.getViewport().join("\n")).toContain("Usage");
+
+      terminal.sendInput("\x1b");
+      app.tui.renderNow();
+      await terminal.flush();
+      const viewport = terminal.getViewport().join("\n");
+      expect(viewport).toContain("Message 1");
+      expect(viewport).toContain("Message");
+      expect(app.tui.render(80).findIndex((line) => line.trim().length > 0)).toBe(firstContentRowBefore);
+      expect(terminal.getViewport().findIndex((line) => line.trim().length > 0)).toBe(firstContentRowBefore);
+    } finally {
+      await app.stop();
+    }
+  });
+
+  it.each([
+    ['xterm', VirtualTerminal],
+    ['clear-to-scrollback terminal', ClearToScrollbackTerminal],
+  ] as const)('restores unique long history after /usage on %s', async (_name, Terminal) => {
+    const terminal = new Terminal(80, 24);
+    const app = createTuiApp({
+      runtime: createRuntime(),
+      terminal,
+      version: "0.1.0",
+      workspaceDir: "/workspace",
+    });
+
+    app.start();
+    try {
+      await app.ready;
+      for (let index = 0; index < 12; index++) await app.submit(`Message ${index}`);
+      await app.submit("/usage");
+      app.tui.renderNow();
+      await terminal.flush();
+      expect(terminal.getViewport().join("\n")).toContain("Usage");
+
+      terminal.sendInput("\x1b");
+      app.tui.renderNow();
+      await terminal.flush();
+      const history = terminal.getScrollBuffer();
+      for (let index = 0; index < 12; index++) {
+        expect(history.filter((line) => line.trimEnd().endsWith(`› Message ${index}`))).toHaveLength(1);
+      }
+      expect(history.join("\n")).not.toContain("Session usage");
+      expect(terminal.getViewport().join("\n")).toContain("Ask Mcode to do anything");
+      expect(terminal.getViewport().join("\n")).toContain("/workspace");
+    } finally {
+      await app.stop();
+    }
   });
 
   it("uses public Runtime owners for Session inspection commands", async () => {
@@ -11229,12 +11646,15 @@ describe("createTuiApp", () => {
     app.start();
     await app.ready;
     const submitting = app.submit("Wait for the session");
-    await vi.waitFor(() =>
-      expect(app.controller.snapshot()).toMatchObject({
+    let turnIdAtAbort: string | undefined;
+    await vi.waitFor(() => {
+      const snapshot = app.controller.snapshot();
+      turnIdAtAbort = snapshot.activeTurnId;
+      expect(snapshot).toMatchObject({
         status: "starting",
         activeTurnId: expect.any(String),
-      }),
-    );
+      });
+    });
     expect(app.tui.render(80).join("\n")).toContain("Loading");
     expect(app.tui.render(80).join("\n")).not.toContain("Loading · 0s");
     expect(app.tui.render(80).join("\n")).not.toContain("MCode ·");
@@ -11249,11 +11669,15 @@ describe("createTuiApp", () => {
     await submitting;
 
     expect(runtime.sendMessage).not.toHaveBeenCalled();
-    expect(app.transcript.snapshot()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: "assistant", status: "cancelled" }),
-      ]),
-    );
+    // The turn had produced no output, so its prompt returned to the composer;
+    // the user row stays in the transcript, marked cancelled.
+    expect(app.editor.getText()).toBe("Wait for the session");
+    expect(app.transcript.get(`user:${turnIdAtAbort}`)?.status).toBe("cancelled");
+    expect(
+      app.transcript
+        .snapshot()
+        .some((cell) => cell.kind === "assistant" && cell.status === "cancelled"),
+    ).toBe(true);
     await app.stop();
   });
 
@@ -11303,7 +11727,9 @@ describe("createTuiApp", () => {
     );
     terminal.input?.("Second request");
     terminal.input?.("\r");
-    await vi.waitFor(() => expect(app.editor.getText()).toBe("Second request"));
+    await vi.waitFor(() =>
+      expect(app.editor.getText()).toContain("Second request"),
+    );
     expect(runtime.sendMessage).toHaveBeenCalledTimes(1);
 
     await vi.waitFor(() =>
@@ -11313,6 +11739,11 @@ describe("createTuiApp", () => {
       expect(app.controller.snapshot().retiringTurnId).toBeUndefined(),
     );
     expect(app.controller.snapshot().cancelling).toBe(false);
+    // The aborted first prompt (still without output) returns to the composer
+    // and merges with the text typed while the fence was active.
+    await vi.waitFor(() =>
+      expect(app.editor.getText()).toBe("First request\nSecond request"),
+    );
     expect(app.tui.render(80).join("\n")).not.toContain(
       "Stopping the current response",
     );
@@ -11322,11 +11753,12 @@ describe("createTuiApp", () => {
     );
     expect(runtime.sendMessage).toHaveBeenCalledTimes(2);
     expect(runtime.enqueueMessage).not.toHaveBeenCalled();
-    expect(app.transcript.snapshot()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: "assistant", status: "cancelled" }),
-      ]),
-    );
+    // Restoring the aborted prompt keeps that turn's rows, marked cancelled.
+    expect(
+      app.transcript
+        .snapshot()
+        .some((cell) => cell.kind === "assistant" && cell.status === "cancelled"),
+    ).toBe(true);
     await app.stop();
   });
 
@@ -11339,6 +11771,9 @@ describe("createTuiApp", () => {
     });
     vi.mocked(runtime.sendMessage).mockImplementation(
       async function* sendMessage(_req: SendMessageReq, signal?: AbortSignal) {
+        // One delta keeps this turn outside the abort-prompt-restore window so
+        // this test stays focused on the failed-submission restore below.
+        yield { type: "delta", content: "First response" };
         await new Promise<void>((resolve) => {
           signal?.addEventListener("abort", resolve, { once: true });
         });
@@ -11393,6 +11828,991 @@ describe("createTuiApp", () => {
     );
     await app.stop();
   });
+
+  it("returns the prompt to the composer when a turn is aborted before any output", async () => {
+    const terminal = new FakeTerminal();
+    const runtime = createRuntime();
+    vi.mocked(runtime.sendMessage).mockImplementation(
+      async function* sendMessage(_req: SendMessageReq, signal?: AbortSignal) {
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", resolve, { once: true });
+        });
+        yield { type: "done" };
+      },
+    );
+    vi.mocked(runtime.abortSession).mockResolvedValue(true);
+    const app = createTuiApp({
+      runtime,
+      terminal,
+      version: "0.1.0",
+      workspaceDir: "/workspace",
+    });
+
+    app.start();
+    await app.ready;
+    terminal.input?.("Fix the typo");
+    terminal.input?.("\r");
+    await vi.waitFor(() =>
+      expect(app.controller.snapshot().status).toBe("running"),
+    );
+    const turnId = app.controller.snapshot().activeTurnId;
+    expect(turnId).toBeTruthy();
+
+    terminal.input?.("\x1b");
+    await vi.waitFor(() => expect(app.editor.getText()).toBe("Fix the typo"));
+
+    // The user row stays in the transcript, marked cancelled and rendered
+    // with the muted marker.
+    const cancelledUserCell = app.transcript.get(`user:${turnId}`);
+    expect(cancelledUserCell).toBeDefined();
+    expect(cancelledUserCell?.status).toBe("cancelled");
+    expect(
+      app.transcript.snapshot().some((cell) => cell.turnId === turnId),
+    ).toBe(true);
+    await vi.waitFor(() =>
+      expect(app.tui.render(160).join("\n")).toContain("× Cancelled"),
+    );
+    await vi.waitFor(() =>
+      expect(app.tui.render(160).join("\n")).toContain(
+        "Stopped · message restored to the Composer.",
+      ),
+    );
+    await app.stop();
+  });
+
+  it.each([
+    "resubmit",
+    "cancel",
+    "failed-submit-cancel",
+    "new-operation-cancel",
+    "rewound-submit-cancel",
+    "resubmit-required-cancel",
+    "fast-completion",
+    "early-rewind",
+    "display-commit-cancel",
+  ])(
+    "keeps the interrupted footer lifecycle correct after double Escape and %s",
+    async (action) => {
+      const terminal = new FakeTerminal();
+      const screen = new VirtualTerminalScreen(terminal.columns, terminal.rows);
+      const frames: string[] = [];
+      const write = terminal.write.bind(terminal);
+      terminal.write = (data) => {
+        write(data);
+        screen.feed(data);
+        if (data.includes("\x1b[?2026l")) frames.push(screen.text());
+      };
+      const runtime = createRuntime();
+      const busEvents: TuiRuntimeEvent[] = [];
+      let wakeBus: (() => void) | undefined;
+      let finishEdit: (() => void) | undefined;
+      vi.mocked(runtime.watchEvents).mockImplementation(async function* (signal) {
+        while (!signal.aborted) {
+          if (busEvents.length === 0) {
+            await new Promise<void>((resolve) => {
+              wakeBus = resolve;
+              signal.addEventListener("abort", resolve, { once: true });
+            });
+          }
+          const event = busEvents.shift();
+          if (event) yield event;
+        }
+      });
+      const originalMessage = {
+        id: "msg-user-interrupted",
+        role: "user" as const,
+        content: "Original query",
+        timestamp: 1,
+      };
+      vi.mocked(runtime.listSessionInputSummaries).mockResolvedValue([
+        { userMessageId: originalMessage.id, timestamp: 1, fileChangeCount: 0 },
+      ]);
+      vi.mocked(runtime.listMessagePage).mockResolvedValue({
+        messages: [originalMessage],
+        hasMore: false,
+      });
+      vi.mocked(runtime.sendMessage).mockImplementation(
+        async function* (_request, signal) {
+          yield { type: "message", message: originalMessage };
+          yield { type: "delta", content: "Partial response" };
+          await new Promise<void>((resolve) => {
+            signal?.addEventListener("abort", resolve, { once: true });
+          });
+          yield { type: "done" };
+        },
+      );
+      // The RPC/history refresh can finish before the replacement session.start event.
+      vi.mocked(runtime.editSessionMessage).mockImplementation(async () => {
+        if (action === "failed-submit-cancel")
+          throw new Error("Edit rejected before rewind");
+        const failureCodes: Partial<Record<string, string>> = {
+          "new-operation-cancel": "EDIT_RESTART_NEEDS_NEW_OPERATION",
+          "rewound-submit-cancel": "EDIT_SUBMIT_FAILED_AFTER_REWIND",
+          "resubmit-required-cancel": "EDIT_RESTART_NEEDS_RESUBMIT",
+          "display-commit-cancel": "REWIND_DISPLAY_COMMIT_FAILED",
+        };
+        const failureCode = failureCodes[action];
+        if (failureCode)
+          throw Object.assign(new Error("Edit failed"), { key: failureCode });
+        if (action === "fast-completion") {
+          app.controller.beginRuntimeTurn("turn-edited", 1);
+          app.controller.runtimeTurnSettlement.settleProjection(
+            "turn-edited",
+            "succeeded",
+            2_000,
+          );
+        }
+        vi.mocked(runtime.getMessages).mockResolvedValue([
+          { ...originalMessage, id: "msg-user-edited", content: "Edited query" },
+        ]);
+        if (action === "early-rewind") {
+          busEvents.push(
+            runtimeEvent({
+              type: "message.rewind",
+              timestamp: 101,
+              source: "runtime-v2",
+              payload: { sessionId: "session-1", contextReset: true },
+            }),
+          );
+          wakeBus?.();
+          await new Promise<void>((resolve) => {
+            finishEdit = resolve;
+          });
+        }
+        return {
+          rewound: true,
+          turnId: "turn-edited",
+          userMessageId: "msg-user-edited",
+        };
+      });
+      const app = createTuiApp({
+        runtime,
+        terminal,
+        version: "0.1.0",
+        workspaceDir: "/workspace",
+      });
+      app.start();
+      try {
+        await app.ready;
+        terminal.input?.("Original query");
+        terminal.input?.("\r");
+        await vi.waitFor(() =>
+          expect(
+            app.transcript
+              .snapshot()
+              .some((cell) => cell.content === "Partial response"),
+          ).toBe(true),
+        );
+        terminal.input?.("\x1b");
+        await vi.waitFor(() =>
+          expect(
+            app.transcript
+              .snapshot()
+              .some((cell) => cell.kind === "turn-duration"),
+          ).toBe(true),
+        );
+        expect(app.editor.getText()).toBe("");
+        app.tui.renderNow();
+        expect(screen.text()).toContain("Interrupted after");
+
+        terminal.input?.("\x1b");
+        terminal.input?.("\x1b");
+        await vi.waitFor(() =>
+          expect(app.editor.getText()).toBe("Original query"),
+        );
+        app.tui.renderNow();
+        expect(screen.text()).not.toContain("Interrupted after");
+
+        if (action === "cancel") {
+          terminal.input?.("\x1b");
+          app.tui.renderNow();
+          expect(screen.text()).toContain("Interrupted after");
+          expect(runtime.editSessionMessage).not.toHaveBeenCalled();
+          return;
+        }
+
+        frames.length = 0;
+        app.editor.setText("Edited query");
+        terminal.input?.("\r");
+        if (action.endsWith("-cancel")) {
+          await vi.waitFor(() =>
+            expect(app.editor.getText()).toBe("Edited query"),
+          );
+          expect(runtime.editSessionMessage).toHaveBeenCalledOnce();
+          terminal.input?.("\x1b");
+          app.tui.renderNow();
+          if (
+            action === "failed-submit-cancel" ||
+            action === "new-operation-cancel"
+          ) {
+            expect(screen.text()).toContain("Interrupted after");
+          } else {
+            expect(screen.text()).not.toContain("Interrupted after");
+          }
+          return;
+        }
+        await vi.waitFor(() =>
+          expect(
+            app.transcript
+              .snapshot()
+              .some((cell) => cell.sourceMessageId === "msg-user-edited"),
+          ).toBe(true),
+        );
+        app.tui.renderNow();
+        if (action === "early-rewind") {
+          // Inspect the actual screen while the edit RPC is still pending.
+          expect(finishEdit).toBeDefined();
+          expect(screen.text()).not.toContain("Interrupted after");
+          finishEdit?.();
+          await vi.waitFor(() => expect(app.editor.getText()).toBe(""));
+          app.tui.renderNow();
+        }
+        expect(runtime.editSessionMessage).toHaveBeenCalledOnce();
+        expect(screen.text()).toContain("Edited query");
+        expect(screen.text()).not.toContain("Interrupted after");
+        if (action === "fast-completion")
+          expect(screen.text()).toContain("Completed in 2s");
+        expect(
+          frames.filter((frame) => frame.includes("Interrupted after")),
+        ).toEqual([]);
+      } finally {
+        finishEdit?.();
+        await app.stop();
+        screen.dispose();
+      }
+    },
+  );
+
+  it("clears the interrupted duration before the next message input returns", async () => {
+    const terminal = new FakeTerminal();
+    terminal.rows = 10;
+    const screen = new VirtualTerminalScreen(terminal.columns, terminal.rows);
+    const frames: string[] = [];
+    const write = terminal.write.bind(terminal);
+    terminal.write = (data) => {
+      write(data);
+      // Model terminals that preserve an erased screen in native scrollback.
+      screen.feed(
+        data.replaceAll(
+          "\x1b[2J",
+          `\x1b[${terminal.rows};1H${"\r\n".repeat(terminal.rows)}\x1b[2J`,
+        ),
+      );
+      if (data.includes("\x1b[?2026l")) frames.push(screen.text());
+    };
+    const runtime = createRuntime();
+    let finishResend: (() => void) | undefined;
+    let sendCount = 0;
+    vi.mocked(runtime.sendMessage).mockImplementation(
+      async function* (_request, signal) {
+        sendCount += 1;
+        if (sendCount <= 10) {
+          yield { type: "delta", content: `Preload reply ${sendCount}` };
+          yield { type: "done" };
+          return;
+        }
+        if (sendCount === 11) {
+          yield { type: "delta", content: "Partial response" };
+          await new Promise<void>((resolve) => {
+            signal?.addEventListener("abort", resolve, { once: true });
+          });
+        } else {
+          await new Promise<void>((resolve) => {
+            finishResend = resolve;
+          });
+        }
+        if (sendCount === 12) yield { type: "delta", content: "Agent reply" };
+        yield { type: "done" };
+      },
+    );
+    const app = createTuiApp({
+      runtime,
+      terminal,
+      version: "0.1.0",
+      workspaceDir: "/workspace",
+    });
+
+    app.start();
+    try {
+      await app.ready;
+      for (let i = 0; i < 10; i++) {
+        await app.submit(`Preload ${i}`);
+        app.tui.renderNow();
+      }
+      terminal.input?.("First request");
+      terminal.input?.("\r");
+      await vi.waitFor(() => expect(app.controller.snapshot().status).toBe("running"));
+      terminal.input?.("\x1b");
+      await vi.waitFor(() =>
+        expect(app.tui.render(80).join("\n")).toContain("Partial response"),
+      );
+      await vi.waitFor(() =>
+        expect(
+          app.transcript
+            .snapshot()
+            .some((cell) => cell.kind === "turn-duration" && cell.status === "cancelled"),
+        ).toBe(true),
+      );
+      app.tui.renderNow();
+      expect(screen.text()).toContain("Interrupted after");
+
+      app.tui.renderNow();
+      frames.length = 0;
+      terminal.input?.("Second request");
+      terminal.input?.("\r");
+      expect(screen.text()).not.toContain("Interrupted after");
+      expect(app.tui.render(80).join("\n")).not.toContain("Interrupted after");
+      await vi.waitFor(() => expect(runtime.sendMessage).toHaveBeenCalledTimes(12));
+      app.tui.renderNow();
+
+      expect(frames.length).toBeGreaterThan(0);
+      expect(frames.filter((frame) => frame.includes("Interrupted after"))).toEqual([]);
+    } finally {
+      finishResend?.();
+      await app.stop();
+      screen.dispose();
+    }
+  });
+
+  it("returns a thinking-only turn's prompt to the composer on abort", async () => {
+    const terminal = new FakeTerminal();
+    const runtime = createRuntime();
+    vi.mocked(runtime.sendMessage).mockImplementation(
+      async function* sendMessage(_req: SendMessageReq, signal?: AbortSignal) {
+        yield { type: "delta", thinking: "let me consider" };
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", resolve, { once: true });
+        });
+        yield { type: "done" };
+      },
+    );
+    vi.mocked(runtime.abortSession).mockResolvedValue(true);
+    const app = createTuiApp({
+      runtime,
+      terminal,
+      version: "0.1.0",
+      workspaceDir: "/workspace",
+    });
+
+    app.start();
+    await app.ready;
+    terminal.input?.("Wrong question");
+    terminal.input?.("\r");
+    await vi.waitFor(() =>
+      expect(app.controller.snapshot().status).toBe("running"),
+    );
+    const turnId = app.controller.snapshot().activeTurnId;
+    await vi.waitFor(() =>
+      expect(
+        app.transcript.snapshot().some((cell) => cell.kind === "thinking"),
+      ).toBe(true),
+    );
+
+    terminal.input?.("\x1b");
+    await vi.waitFor(() => expect(app.editor.getText()).toBe("Wrong question"));
+    expect(
+      app.transcript.snapshot().some((cell) => cell.turnId === turnId),
+    ).toBe(true);
+    await app.stop();
+  });
+
+  it("keeps the transcript and leaves the composer empty when aborting after output", async () => {
+    const terminal = new FakeTerminal();
+    const runtime = createRuntime();
+    vi.mocked(runtime.sendMessage).mockImplementation(
+      async function* sendMessage(_req: SendMessageReq, signal?: AbortSignal) {
+        yield { type: "delta", content: "partial answer" };
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", resolve, { once: true });
+        });
+        yield { type: "done" };
+      },
+    );
+    vi.mocked(runtime.abortSession).mockResolvedValue(true);
+    const app = createTuiApp({
+      runtime,
+      terminal,
+      version: "0.1.0",
+      workspaceDir: "/workspace",
+    });
+
+    app.start();
+    await app.ready;
+    terminal.input?.("Keep this prompt");
+    terminal.input?.("\r");
+    await vi.waitFor(() =>
+      expect(app.controller.snapshot().status).toBe("running"),
+    );
+    const turnId = app.controller.snapshot().activeTurnId;
+    await vi.waitFor(() =>
+      expect(
+        app.transcript.snapshot().some(
+          (cell) => cell.kind === "assistant" && cell.content.length > 0,
+        ),
+      ).toBe(true),
+    );
+
+    terminal.input?.("\x1b");
+    await vi.waitFor(() =>
+      expect(app.controller.snapshot().activeTurnId).toBeUndefined(),
+    );
+    await vi.waitFor(() =>
+      expect(app.controller.snapshot().retiringTurnId).toBeUndefined(),
+    );
+
+    expect(app.editor.getText()).toBe("");
+    expect(app.transcript.get(`user:${turnId}`)).toBeDefined();
+    expect(app.tui.render(160).join("\n")).not.toContain(
+      "Stopped · message restored to the Composer.",
+    );
+    await app.stop();
+  });
+
+  it.each([false, true])(
+    "restores a mixed submission after abort (local attachment removed: %s)",
+    async (removeLocal) => {
+      const directory = await mkdtemp(join(tmpdir(), "mcode-mixed-abort-"));
+      try {
+        const localPath = join(directory, "local.png");
+        await writeFile(localPath, "png");
+        const terminal = new FakeTerminal();
+        const runtime = createRuntime();
+        vi.mocked(runtime.sendMessage).mockImplementation(
+          async function* sendMessage(_req: SendMessageReq, signal?: AbortSignal) {
+            await new Promise<void>((resolve) => {
+              signal?.addEventListener("abort", resolve, { once: true });
+            });
+            yield { type: "done" };
+          },
+        );
+        vi.mocked(runtime.abortSession).mockResolvedValue(true);
+        const app = createTuiApp({
+          runtime,
+          terminal,
+          version: "0.1.0",
+          workspaceDir: "/workspace",
+        });
+
+        app.start();
+        await app.ready;
+        // Mixed submission: a file-backed attachment (composer chip) plus an
+        // asset-only transport attachment. Submit through the seed path so the
+        // snapshot carries the full transport list, exactly as a paste flow
+        // would produce.
+        const seed = {
+          editor: {
+            schemaVersion: 1 as const,
+            text: "Mixed restore",
+            cursor: 13,
+            pastes: [],
+            pasteCounter: 0,
+          },
+          resources: {
+            attachments: [
+              {
+                type: "image" as const,
+                fileName: "local.png",
+                mimeType: "image/png",
+                sizeBytes: 3,
+                filePath: localPath,
+              },
+            ],
+          },
+          transportAttachments: [
+            {
+              type: "image" as const,
+              fileName: "local.png",
+              mimeType: "image/png",
+              filePath: localPath,
+            },
+            {
+              type: "image" as const,
+              fileName: "asset.png",
+              mimeType: "image/png",
+              assetId: "asset-mixed-1",
+            },
+          ],
+        };
+        void app.commandFlow.submit("Mixed restore", seed).catch(() => undefined);
+        await vi.waitFor(() =>
+          expect(app.controller.snapshot().status).toBe("running"),
+        );
+        const turnIdAtAbort = app.controller.snapshot().activeTurnId;
+
+        terminal.input?.("\x1b");
+        await vi.waitFor(() =>
+          expect(app.editor.getText()).toBe("Mixed restore [Image #1] "),
+        );
+        // The retained snapshot was consulted and dropped after the restore.
+        await vi.waitFor(() =>
+          expect(app.commandFlow.getRetainedSubmission(String(turnIdAtAbort))).toBeUndefined(),
+        );
+
+        if (removeLocal) {
+          app.editor.handleInput("\x05");
+          app.editor.handleInput("\x7f");
+          await vi.waitFor(() =>
+            expect(app.editor.getText()).not.toContain("[Image #1]"),
+          );
+        }
+
+        // Resubmit the restored draft with its current attachment selection.
+        app.editor.handleInput("\r");
+        await vi.waitFor(() =>
+          expect(vi.mocked(runtime.sendMessage).mock.calls.length).toBe(2),
+        );
+
+        const request = vi.mocked(runtime.sendMessage).mock.calls[1][0];
+        expect(request.attachments).toHaveLength(removeLocal ? 1 : 2);
+        const locals = request.attachments?.map((attachment) => attachment.local) ?? [];
+        expect(locals).toEqual(
+          removeLocal
+            ? [expect.objectContaining({ assetId: "asset-mixed-1" })]
+            : expect.arrayContaining([
+                expect.objectContaining({ filePath: localPath }),
+                expect.objectContaining({ assetId: "asset-mixed-1" }),
+              ]),
+        );
+        await app.stop();
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "restores hidden transport only for unchanged text (edited: %s)",
+    async (edited) => {
+      const terminal = new FakeTerminal();
+      const runtime = createRuntime();
+      vi.mocked(runtime.sendMessage).mockImplementation(
+        async function* sendMessage(_req: SendMessageReq, signal?: AbortSignal) {
+          await new Promise<void>((resolve) => {
+            signal?.addEventListener("abort", resolve, { once: true });
+          });
+          yield { type: "done" };
+        },
+      );
+      vi.mocked(runtime.abortSession).mockResolvedValue(true);
+      const app = createTuiApp({
+        runtime,
+        terminal,
+        version: "0.1.0",
+        workspaceDir: "/workspace",
+      });
+
+      app.start();
+      await app.ready;
+      void app.commandFlow.submit("Visible prompt", {
+        editor: { schemaVersion: 1, text: "", cursor: 0, pastes: [], pasteCounter: 0 },
+        resources: { attachments: [] },
+        transportContent: "Original hidden transport",
+        clientIntent: "plan-entry",
+      });
+      await vi.waitFor(() => expect(app.controller.snapshot().status).toBe("running"));
+
+      terminal.input?.("\x1b");
+      await vi.waitFor(() => expect(app.editor.getText()).toBe("Visible prompt"));
+      if (edited) app.editor.setText("Corrected prompt");
+      app.editor.handleInput("\r");
+      await vi.waitFor(() => expect(vi.mocked(runtime.sendMessage)).toHaveBeenCalledTimes(2));
+      const request = vi.mocked(runtime.sendMessage).mock.calls[1][0];
+      expect(request.content).toBe(edited ? "Corrected prompt" : "Original hidden transport");
+      expect(request.clientIntent).toBe(edited ? undefined : "plan-entry");
+      await app.stop();
+    },
+  );
+
+  it("sends edited visible text instead of stale hidden review transport after abort", async () => {
+    const terminal = new FakeTerminal();
+    const runtime = createRuntime();
+    vi.mocked(runtime.sendMessage).mockImplementation(
+      async function* sendMessage(_req: SendMessageReq, signal?: AbortSignal) {
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", resolve, { once: true });
+        });
+        yield { type: "done" };
+      },
+    );
+    vi.mocked(runtime.abortSession).mockResolvedValue(true);
+    const app = createTuiApp({
+      runtime,
+      terminal,
+      version: "0.1.0",
+      workspaceDir: "/workspace",
+    });
+
+    app.start();
+    await app.ready;
+    void app.commandFlow.submit(
+      "/review",
+      {
+        editor: { schemaVersion: 1, text: "/review", cursor: 7, pastes: [], pasteCounter: 0 },
+        resources: { attachments: [] },
+      },
+      {
+        forceMessage: true,
+        transportContent: "Please review my uncommitted changes.",
+        reviewRequest: { scope: "local_changes" },
+      },
+    );
+    await vi.waitFor(() => expect(app.controller.snapshot().status).toBe("running"));
+
+    terminal.input?.("\x1b");
+    await vi.waitFor(() => expect(app.editor.getText()).toBe("/review"));
+    app.editor.setText("Review only src/foo.ts");
+    app.editor.handleInput("\r");
+    await vi.waitFor(() => expect(vi.mocked(runtime.sendMessage)).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(runtime.sendMessage).mock.calls[1][0]).toMatchObject({
+      content: "Review only src/foo.ts",
+    });
+    expect(vi.mocked(runtime.sendMessage).mock.calls[1][0].reviewRequest).toBeUndefined();
+    await app.stop();
+  });
+
+  it("does not restore the prompt when the runtime does not confirm the stop", async () => {
+    const terminal = new FakeTerminal();
+    const runtime = createRuntime();
+    vi.mocked(runtime.sendMessage).mockImplementation(
+      async function* sendMessage(_req: SendMessageReq, signal?: AbortSignal) {
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", resolve, { once: true });
+        });
+        yield { type: "done" };
+      },
+    );
+    vi.mocked(runtime.abortSession).mockResolvedValue(false);
+    const app = createTuiApp({
+      runtime,
+      terminal,
+      version: "0.1.0",
+      workspaceDir: "/workspace",
+    });
+
+    app.start();
+    await app.ready;
+    terminal.input?.("Unconfirmed stop");
+    terminal.input?.("\r");
+    await vi.waitFor(() =>
+      expect(app.controller.snapshot().status).toBe("running"),
+    );
+    const turnId = app.controller.snapshot().activeTurnId;
+
+    terminal.input?.("\x1b");
+    await vi.waitFor(() =>
+      expect(app.controller.snapshot().cancelling).toBe(true),
+    );
+    // Let the abort funnel (settle race included) finish before asserting; an
+    // immediate assert could pass before a regressed restore ever fired.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(app.editor.getText()).toBe("");
+    expect(app.transcript.get(`user:${turnId}`)).toBeDefined();
+    await app.stop();
+  });
+
+  it("does not restore the prompt when only delegated agents stopped", async () => {
+    const terminal = new FakeTerminal();
+    const runtime = createRuntime();
+    vi.mocked(runtime.sendMessage).mockImplementation(
+      async function* sendMessage(_req: SendMessageReq, signal?: AbortSignal) {
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", resolve, { once: true });
+        });
+        yield { type: "done" };
+      },
+    );
+    vi.mocked(runtime.abortSession).mockResolvedValue(false);
+    vi.mocked(runtime.stopDelegation).mockResolvedValue({
+      rootStopped: false,
+      stoppedSessionIds: ["child-1"],
+      failedSessionIds: [],
+      activeSessionIds: [],
+    });
+    const app = createTuiApp({
+      runtime,
+      terminal,
+      version: "0.1.0",
+      workspaceDir: "/workspace",
+    });
+
+    app.start();
+    await app.ready;
+    terminal.input?.("Root keeps running");
+    terminal.input?.("\r");
+    await vi.waitFor(() =>
+      expect(app.controller.snapshot().status).toBe("running"),
+    );
+    const turnId = app.controller.snapshot().activeTurnId;
+
+    terminal.input?.("\x1b");
+    await vi.waitFor(() =>
+      expect(app.controller.snapshot().cancelling).toBe(true),
+    );
+    // Let the abort funnel settle; the root turn was never confirmed stopped.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(app.editor.getText()).toBe("");
+    expect(app.transcript.get(`user:${turnId}`)).toBeDefined();
+    await app.stop();
+  });
+
+  it("does not restore when retirement does not settle within the settlement window", async () => {
+    const terminal = new FakeTerminal();
+    const runtime = createRuntime();
+    vi.mocked(runtime.sendMessage).mockImplementation(
+      async function* sendMessage(_req: SendMessageReq, signal?: AbortSignal) {
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener("abort", resolve, { once: true });
+        });
+        yield { type: "done" };
+      },
+    );
+    vi.mocked(runtime.abortSession).mockResolvedValue(true);
+    const app = createTuiApp({
+      runtime,
+      terminal,
+      version: "0.1.0",
+      workspaceDir: "/workspace",
+    });
+
+    app.start();
+    await app.ready;
+    terminal.input?.("Hanging retirement");
+    terminal.input?.("\r");
+    await vi.waitFor(() =>
+      expect(app.controller.snapshot().status).toBe("running"),
+    );
+    const turnId = app.controller.snapshot().activeTurnId;
+
+    // Simulate a retirement that never settles: whenIdle parks its waiter
+    // forever, so the bounded settle race must skip the restore instead of
+    // hanging the funnel.
+    vi.spyOn(app.controller, "whenIdle").mockReturnValue(new Promise(() => undefined));
+
+    terminal.input?.("\x1b");
+    // Both the coordinator settle wait and the restore's settle race use the
+    // 1s cancellation-settlement window; dwell past both before asserting.
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+
+    expect(app.editor.getText()).toBe("");
+    expect(app.tui.render(160).join("\n")).not.toContain(
+      "Stopped · message restored to the Composer.",
+    );
+    // The restore never fired; the user row is untouched by it. (Its status
+    // may legitimately read 'cancelled' from abort-time markTurn when Esc
+    // lands before the user echo, which is unrelated to the restore.)
+    expect(app.transcript.get(`user:${turnId}`)).toBeDefined();
+
+    await app.stop();
+  });
+
+  it("does not duplicate the restored prompt after relaunch", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "mcode-abort-draft-"));
+    try {
+      const terminal = new FakeTerminal();
+      const runtime = createRuntime();
+      vi.mocked(runtime.sendMessage).mockImplementation(
+        async function* sendMessage(_req: SendMessageReq, signal?: AbortSignal) {
+          await new Promise<void>((resolve) => {
+            signal?.addEventListener("abort", resolve, { once: true });
+          });
+          yield { type: "done" };
+        },
+      );
+      vi.mocked(runtime.abortSession).mockResolvedValue(true);
+      const first = createTuiApp({
+        runtime,
+        terminal,
+        version: "0.1.0",
+        dataDir,
+        workspaceDir: "/workspace",
+      });
+      first.start();
+      await first.ready;
+      await first.openSession("session-1");
+      terminal.input?.("Only once");
+      terminal.input?.("\r");
+      await vi.waitFor(() =>
+        expect(first.controller.snapshot().status).toBe("running"),
+      );
+      terminal.input?.("\x1b");
+      await vi.waitFor(() => expect(first.editor.getText()).toBe("Only once"));
+      await first.stop();
+
+      const restored = createTuiApp({
+        runtime: createRuntime(),
+        terminal: new FakeTerminal(),
+        version: "0.1.0",
+        dataDir,
+        workspaceDir: "/workspace",
+      });
+      restored.start();
+      await restored.ready;
+      await restored.openSession("session-1");
+      await vi.waitFor(() => expect(restored.editor.getText()).toBe("Only once"));
+      await restored.stop();
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves restored asset and hidden submission metadata after relaunch", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "mcode-abort-metadata-"));
+    try {
+      const localPath = join(dataDir, "local.png");
+      await writeFile(localPath, "png");
+      const runtime = createRuntime();
+      vi.mocked(runtime.sendMessage).mockImplementation(
+        async function* sendMessage(_req: SendMessageReq, signal?: AbortSignal) {
+          await new Promise<void>((resolve) => {
+            signal?.addEventListener("abort", resolve, { once: true });
+          });
+          yield { type: "done" };
+        },
+      );
+      vi.mocked(runtime.abortSession).mockResolvedValue(true);
+      const first = createTuiApp({
+        runtime,
+        terminal: new FakeTerminal(),
+        version: "0.1.0",
+        dataDir,
+        workspaceDir: "/workspace",
+      });
+      first.start();
+      await first.ready;
+      await first.openSession("session-1");
+      void first.commandFlow.submit("Mixed restore", {
+        sessionId: "session-1",
+        editor: {
+          schemaVersion: 1,
+          text: "Mixed restore",
+          cursor: 13,
+          pastes: [],
+          pasteCounter: 0,
+        },
+        resources: {
+          attachments: [{
+            type: "image",
+            fileName: "local.png",
+            mimeType: "image/png",
+            sizeBytes: 3,
+            filePath: localPath,
+          }],
+        },
+        transportAttachments: [
+          { type: "image", fileName: "local.png", mimeType: "image/png", filePath: localPath },
+          { type: "image", fileName: "asset.png", mimeType: "image/png", assetId: "asset-1" },
+        ],
+        transportContent: "Original hidden transport",
+        clientIntent: "plan-entry",
+      });
+      await vi.waitFor(() => expect(first.controller.snapshot().status).toBe("running"));
+      await first.abortTurn();
+      await vi.waitFor(() => expect(first.editor.getText()).toContain("Mixed restore"));
+      await first.stop();
+
+      const nextRuntime = createRuntime();
+      const restored = createTuiApp({
+        runtime: nextRuntime,
+        terminal: new FakeTerminal(),
+        version: "0.1.0",
+        dataDir,
+        workspaceDir: "/workspace",
+      });
+      restored.start();
+      await restored.ready;
+      await restored.openSession("session-1");
+      await vi.waitFor(() => expect(restored.editor.getText()).toContain("Mixed restore"));
+      expect(restored.editor.captureDraft().attachmentPlaceholders).toHaveLength(1);
+      restored.editor.handleInput("\r");
+      await vi.waitFor(() => expect(nextRuntime.sendMessage).toHaveBeenCalledTimes(1));
+      const request = vi.mocked(nextRuntime.sendMessage).mock.calls[0][0];
+      expect(request.content).toBe("Original hidden transport");
+      expect(request.clientIntent).toBe("plan-entry");
+      expect(request.attachments?.map((attachment) => attachment.local)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ filePath: localPath }),
+          expect.objectContaining({ assetId: "asset-1" }),
+        ]),
+      );
+      await restored.stop();
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])(
+    "preserves review metadata after relaunch only when unchanged (edited: %s)",
+    async (edited) => {
+      const dataDir = await mkdtemp(join(tmpdir(), "mcode-abort-review-"));
+      try {
+        const runtime = createRuntime();
+        vi.mocked(runtime.sendMessage).mockImplementation(
+          async function* sendMessage(_req: SendMessageReq, signal?: AbortSignal) {
+            await new Promise<void>((resolve) => {
+              signal?.addEventListener("abort", resolve, { once: true });
+            });
+            yield { type: "done" };
+          },
+        );
+        vi.mocked(runtime.abortSession).mockResolvedValue(true);
+        const first = createTuiApp({
+          runtime,
+          terminal: new FakeTerminal(),
+          version: "0.1.0",
+          dataDir,
+          workspaceDir: "/workspace",
+        });
+        first.start();
+        await first.ready;
+        await first.openSession("session-1");
+        void first.commandFlow.submit(
+          "/review",
+          {
+            sessionId: "session-1",
+            editor: { schemaVersion: 1, text: "/review", cursor: 7, pastes: [], pasteCounter: 0 },
+            resources: { attachments: [] },
+          },
+          {
+            forceMessage: true,
+            transportContent: "Please review my uncommitted changes.",
+            reviewRequest: { scope: "local_changes" },
+          },
+        );
+        await vi.waitFor(() => expect(first.controller.snapshot().status).toBe("running"));
+        await first.abortTurn();
+        await vi.waitFor(() => expect(first.editor.getText()).toBe("/review"));
+        await first.stop();
+
+        const nextRuntime = createRuntime();
+        const restored = createTuiApp({
+          runtime: nextRuntime,
+          terminal: new FakeTerminal(),
+          version: "0.1.0",
+          dataDir,
+          workspaceDir: "/workspace",
+        });
+        restored.start();
+        await restored.ready;
+        await restored.openSession("session-1");
+        await vi.waitFor(() => expect(restored.editor.getText()).toBe("/review"));
+        if (edited) restored.editor.setText("Review src/foo.ts");
+        restored.editor.handleInput("\r");
+        await vi.waitFor(() => expect(nextRuntime.sendMessage).toHaveBeenCalledOnce());
+        const request = vi.mocked(nextRuntime.sendMessage).mock.calls[0][0];
+        expect(request.content).toBe(
+          edited ? "Review src/foo.ts" : "Please review my uncommitted changes.",
+        );
+        expect(request.reviewRequest).toEqual(
+          edited ? undefined : { scope: "local_changes" },
+        );
+        await restored.stop();
+      } finally {
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("aborts session creation when the TUI stops during its first turn", async () => {
     const terminal = new FakeTerminal();
