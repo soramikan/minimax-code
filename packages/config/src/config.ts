@@ -910,8 +910,13 @@ export interface McpToolSearchConfig {
   maxSchemaTextLen?: number;
 }
 
+/** Language used for built-in code review output. `undefined` follows the runtime region. */
+export type ReviewResponseLanguage = "en" | "zh-CN" | "ja";
+
 export interface ReviewConfig {
   mode: "inline" | "subagent";
+  /** Explicit review response language. When unset, the region decides (`cn` → `zh-CN`, otherwise `en`). */
+  language?: ReviewResponseLanguage;
   /** Generated during parsing to distinguish product defaults from explicit user choices; not read from the config file. */
   modeSource?: "default" | "explicit";
 }

@@ -5,6 +5,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import type { ReviewResponseLanguage } from '@mavis/config';
+
 import type { ReviewPreferencesService } from './preferences.js';
 import type { ReviewChangedFile, ReviewChangedRange, ReviewMode, ReviewTrigger } from './types.js';
 
@@ -13,7 +15,7 @@ const execFileAsync = promisify(execFile);
 export interface PreparedReviewContext {
   reviewRunId: string;
   workspace: string;
-  responseLanguage: 'zh-CN' | 'en';
+  responseLanguage: ReviewResponseLanguage;
   revisionStatus: 'available' | 'partial' | 'unavailable';
   changedFiles?: Map<string, ReviewChangedFile>;
   warnings?: Array<{ code: 'git_state_failed' | 'revision_failed'; path?: string }>;
@@ -22,7 +24,7 @@ export interface PreparedReviewContext {
 export interface PreparedReview {
   mode: ReviewMode;
   trigger: ReviewTrigger;
-  responseLanguage: 'zh-CN' | 'en';
+  responseLanguage: ReviewResponseLanguage;
   reviewPrompt: string;
   displayPrompt: string;
   request: string;
@@ -43,7 +45,7 @@ export class ReviewPreparationService {
   constructor(
     private readonly deps: {
       preferences: ReviewPreferencesService;
-      configGetter: () => { review?: { mode?: unknown } };
+      configGetter: () => { review?: { mode?: unknown; language?: unknown } };
       regionGetter: () => 'cn' | 'en';
     },
   ) {}
@@ -57,7 +59,9 @@ export class ReviewPreparationService {
     },
     promptTemplates: ReviewPromptTemplates,
   ): Promise<PreparedReview> {
-    const responseLanguage = this.deps.regionGetter() === 'cn' ? 'zh-CN' : 'en';
+    const responseLanguage =
+      resolveConfiguredResponseLanguage(this.deps.configGetter()) ??
+      (this.deps.regionGetter() === 'cn' ? 'zh-CN' : 'en');
     const mode = input.requestedMode ?? resolveConfiguredMode(this.deps.configGetter());
     const [templates, userRules, gitContext] = await Promise.all([
       Promise.resolve(promptTemplates),
@@ -117,10 +121,22 @@ function resolveConfiguredMode(config: { review?: { mode?: unknown } }): ReviewM
   return config.review?.mode === 'inline' ? 'inline' : 'subagent';
 }
 
-function buildResponseLanguageInstruction(language: 'zh-CN' | 'en'): string {
-  return language === 'zh-CN'
-    ? '本次所有面向用户的审查文本必须使用简体中文。该要求适用于 summary、每个 finding 的 title 和 content，以及没有可报告问题时的普通文本结论；代码标识符、文件路径和原始错误文本可以保留原文。'
-    : 'All user-facing review text for this run must be written in English. This applies to the summary, every finding title and content, and the ordinary-text conclusion when there are no reportable issues; code identifiers, file paths, and original error text may remain unchanged.';
+function resolveConfiguredResponseLanguage(config: {
+  review?: { language?: unknown };
+}): ReviewResponseLanguage | undefined {
+  const language = config.review?.language;
+  return language === 'en' || language === 'zh-CN' || language === 'ja' ? language : undefined;
+}
+
+function buildResponseLanguageInstruction(language: ReviewResponseLanguage): string {
+  switch (language) {
+    case 'zh-CN':
+      return '本次所有面向用户的审查文本必须使用简体中文。该要求适用于 summary、每个 finding 的 title 和 content，以及没有可报告问题时的普通文本结论；代码标识符、文件路径和原始错误文本可以保留原文。';
+    case 'ja':
+      return '今回の実行におけるすべてのユーザー向けレビューテキストは日本語で記述してください。これは summary、各 finding の title と content、および報告すべき問題がない場合の通常テキストの結論に適用されます。コード識別子、ファイルパス、元のエラーテキストは原文のままにできます。';
+    default:
+      return 'All user-facing review text for this run must be written in English. This applies to the summary, every finding title and content, and the ordinary-text conclusion when there are no reportable issues; code identifiers, file paths, and original error text may remain unchanged.';
+  }
 }
 
 async function collectChangedLines(

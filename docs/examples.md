@@ -22,6 +22,17 @@ Resume the most recent session in the current directory:
 node /absolute/path/to/minimax-code/dist/cli.js --continue
 ```
 
+### Code review language
+
+`/review` runs the built-in read-only review of the current local changes. The response language follows the runtime region (`zh-CN` on the `cn` region, English otherwise). To pin the language independently of the region, set `review.language` in `config.yaml`:
+
+```yaml
+review:
+  language: ja # en | zh-CN | ja
+```
+
+The setting only changes review output text and retry prompts; it does not change the managed endpoint or provider region.
+
 ## 2. Choose your own model
 
 Use `/model` in the interactive TUI to select a model or choose **+ Add 3rd-party provider…**; `/provider` manages saved connections. The known-provider picker labels Z.AI and Zhipu plans separately as **Coding Plan** and **API**. The regional default order puts Coding Plan first; remotely configured pinning can override that order. Choose the plan matching your key. On the model screen, review the Base URL or press **Ctrl+E** to edit it before testing. If the test fails, changes are not saved; the model and key draft remain available for editing and retry. Changing the URL requires another explicit test/save action and never triggers an automatic endpoint fallback.
