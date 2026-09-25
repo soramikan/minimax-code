@@ -48,6 +48,19 @@ When `responseLanguage` is `zh-CN`, use Simplified Chinese for every user-facing
   </findings>
 </review-candidates>
 
+When `responseLanguage` is `ja`, use Japanese for every user-facing field:
+
+<review-candidates version="2" verdict="needs-changes">
+  <summary>対処が必要な問題が1件見つかりました。</summary>
+  <findings>
+    <finding priority="P1">
+      <target type="line-range" path="packages/example.ts" side="new" start-line="42" end-line="42" />
+      <title>null チェックが不足しています</title>
+      <content>`value &lt; 0 &amp;&amp; config.enabled` の場合、ローカル変更によって必須の null チェックが削除され、例外が直接スローされます。</content>
+    </finding>
+  </findings>
+</review-candidates>
+
 Priority meanings:
 
 - P0: release-blocking or catastrophic in essentially every execution.

@@ -228,6 +228,8 @@ export type {
   MavisRegion,
   MavisBuildEnv,
   PresetKey,
+  ReviewConfig,
+  ReviewResponseLanguage,
   PromptConfig,
   TuiCustomStatusLineConfig,
 } from './config.js';

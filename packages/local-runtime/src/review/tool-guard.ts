@@ -1,5 +1,6 @@
 import type { PiBeforeToolCallHook } from '@mavis/agent-core/pi-turn-runner';
 
+import { pickReviewLanguageText } from './localized-text.js';
 import type { ReviewTurnState } from './turn-state.js';
 
 // Bash retains ordinary permission checks; Review adds no argument policy.
@@ -49,22 +50,27 @@ function readSkillName(input: unknown): string | undefined {
 }
 
 function buildRepeatedCodeReviewSkillReason(prepared: ReviewTurnState['prepared']): string {
-  if (prepared?.responseLanguage === 'zh-CN') {
-    return '当前结构化 Review 已经激活，不要再读取 code-review Skill；请使用允许的只读工具继续审查。';
-  }
-  return 'Structured Review is already active. Do not load the code-review Skill; continue with the allowed read-only tools.';
+  return pickReviewLanguageText(prepared?.responseLanguage ?? 'en', {
+    'zh-CN':
+      '当前结构化 Review 已经激活，不要再读取 code-review Skill；请使用允许的只读工具继续审查。',
+    ja: '構造化 Review はすでに有効です。code-review Skill を再度読み込まないでください。許可された読み取り専用ツールでレビューを続けてください。',
+    en: 'Structured Review is already active. Do not load the code-review Skill; continue with the allowed read-only tools.',
+  });
 }
 
 function buildRepeatedCodeReviewReason(prepared: ReviewTurnState['prepared']): string {
   const isSlash = prepared?.trigger === 'slash';
-  if (prepared?.responseLanguage === 'zh-CN') {
-    return isSlash
+  return pickReviewLanguageText(prepared?.responseLanguage ?? 'en', {
+    'zh-CN': isSlash
       ? '当前 Review 已由 Slash 请求激活，不能再次调用 code_review。请直接使用允许的只读工具检查当前改动，并返回 Review 结果。'
-      : '当前 Turn 的 Review 已经激活，不能再次调用 code_review。请直接使用允许的只读工具继续检查，并返回 Review 结果。';
-  }
-  return isSlash
-    ? 'Code Review is already active for this Slash request. Do not call code_review again. Inspect the current changes with the allowed read-only tools and return the Review result directly.'
-    : 'Code Review is already active for this turn. Do not call code_review again. Continue with the allowed read-only tools and return the Review result directly.';
+      : '当前 Turn 的 Review 已经激活，不能再次调用 code_review。请直接使用允许的只读工具继续检查，并返回 Review 结果。',
+    ja: isSlash
+      ? 'この Slash リクエストの Review はすでに有効です。code_review を再度呼び出さないでください。許可された読み取り専用ツールで現在の変更を直接確認し、Review 結果を返してください。'
+      : 'この Turn の Review はすでに有効です。code_review を再度呼び出さないでください。許可された読み取り専用ツールで確認を続け、Review 結果を直接返してください。',
+    en: isSlash
+      ? 'Code Review is already active for this Slash request. Do not call code_review again. Inspect the current changes with the allowed read-only tools and return the Review result directly.'
+      : 'Code Review is already active for this turn. Do not call code_review again. Continue with the allowed read-only tools and return the Review result directly.',
+  });
 }
 
 function readToolSource(toolCall: unknown): unknown {

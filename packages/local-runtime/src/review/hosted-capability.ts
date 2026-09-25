@@ -10,6 +10,7 @@ import { logger as defaultLogger } from '../common/logger.js';
 import type { LocalSessionRecord } from '../sessions/controller.js';
 import { resolveLocalAppMode } from '../runtime/app-mode.js';
 import { createReviewActivityIdentity, emitReviewActivity } from './activity-events.js';
+import { pickReviewLanguageText } from './localized-text.js';
 import { createReviewAfterLlmHook } from './after-llm-hook.js';
 import { ReviewContextAdmission } from './context-admission.js';
 import {
@@ -394,7 +395,11 @@ export class HostedReviewCapability {
       sessionType: 'branch',
       sessionKind: 'task',
       parentSessionId: parent.sessionId,
-      title: preparedRead.prepared.responseLanguage === 'zh-CN' ? '代码审查' : 'Code review',
+      title: pickReviewLanguageText(preparedRead.prepared.responseLanguage, {
+        'zh-CN': '代码审查',
+        ja: 'コードレビュー',
+        en: 'Code review',
+      }),
       visibility: 'hidden',
       purpose: `code-review:${preparedRead.prepared.context.reviewRunId}`,
       runLocation: parent.runLocation,
