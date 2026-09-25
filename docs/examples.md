@@ -33,6 +33,17 @@ review:
 
 The setting only changes review output text and retry prompts; it does not change the managed endpoint or provider region.
 
+### Code review subagent
+
+By default `/review` runs inside the current Session (`inline`). To delegate the review to a dedicated hidden reviewer Session instead, set `review.mode` in `config.yaml`:
+
+```yaml
+review:
+  mode: subagent # inline | subagent
+```
+
+In `subagent` mode the review runs in a hidden `code-review:` branch Session under the current one, keeping review file reads and git inspection out of the main transcript. Repeated reviews — including `/loop` cycles — reuse the same reviewer Session, so it keeps its own model binding and prior review context. If the reviewer Session cannot start or fails, the review falls back to `inline` for that run.
+
 ### Loop until review passes
 
 `/loop <task>` runs the task, then automatically repeats `/review`-and-fix cycles on the current local changes until the review reports no findings, the run is interrupted, or the cap of ten review cycles is reached:
