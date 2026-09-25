@@ -40,6 +40,7 @@ import { TuiSessionFlow } from './controller/session-flow.js';
 import { TuiCommandFlow } from './controller/product/command-flow.js';
 import { TuiInputFlow } from './controller/interaction/input-flow.js';
 import { TuiPermissionModeFlow } from './controller/interaction/permission-mode-flow.js';
+import { TuiLoopFlow } from './controller/product/loop-flow.js';
 import { TuiPlanModeFlow } from './controller/interaction/plan-mode-flow.js';
 import { createTuiAbortLiveTurn } from './controller/run/abort-live-turn.js';
 import { createTuiUpdateFlow } from './controller/product/update-flow.js';
@@ -608,6 +609,12 @@ export function createTuiApp(options: CreateTuiAppOptions): TuiApp {
     },
     isStopped: () => stopped,
   });
+  const loopFlow = new TuiLoopFlow({
+    controller,
+    runtime: options.runtime,
+    append: appendLocalCell,
+    onChanged: updateChromeAndRequestRender,
+  });
   commandFlow = new TuiCommandFlow({
     bashFlow,
     workspaceDir: options.workspaceDir,
@@ -619,6 +626,7 @@ export function createTuiApp(options: CreateTuiAppOptions): TuiApp {
     sessionMutationFlow,
     updateFlow,
     goalFlow,
+    loopFlow,
     planModeFlow,
     permissionModeFlow,
     ...(options.auth ? { auth: options.auth } : {}),
@@ -701,6 +709,7 @@ export function createTuiApp(options: CreateTuiAppOptions): TuiApp {
     onRetryAvailabilityChanged: (sessionId, retryable) =>
       commandFlow.setSessionRetryable(sessionId, retryable),
     goalFlow,
+    loopFlow,
     updateFollowUpPanel: () => queueFlow.updatePanel(),
     onChanged: updateChromeAndRequestRender,
     append: appendLocalCell,

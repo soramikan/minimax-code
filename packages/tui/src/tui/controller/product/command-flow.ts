@@ -28,6 +28,7 @@ import { TuiTurnSubmissionRetainer } from '../run/turn-submission-retainer.js';
 import type { TuiSessionFlow } from '../session-flow.js';
 import type { TuiUpdateFlow } from './update-flow.js';
 import type { TuiGoalFlow } from './goal-flow.js';
+import type { TuiLoopFlow } from './loop-flow.js';
 import type { TuiPlanModeFlow } from '../interaction/plan-mode-flow.js';
 import type { TuiPermissionModeFlow } from '../interaction/permission-mode-flow.js';
 import type { MavisRegion } from '@mavis/config';
@@ -76,6 +77,7 @@ export interface TuiCommandFlowOptions {
   >;
   readonly updateFlow: TuiUpdateFlow;
   readonly goalFlow?: Pick<TuiGoalFlow, 'execute' | 'resumeBlocked'>;
+  readonly loopFlow?: Pick<TuiLoopFlow, 'start' | 'stop' | 'statusText' | 'isActive'>;
   readonly planModeFlow?: TuiPlanModeFlow;
   readonly permissionModeFlow?: TuiPermissionModeFlow;
   readonly auth?: McodeAuthPort;
@@ -1124,6 +1126,23 @@ export class TuiCommandFlow {
             reviewRequest: { scope: 'local_changes' },
           },
         );
+      },
+      loop: async (invocation) => {
+        const loopFlow = this.options.loopFlow;
+        if (!loopFlow) {
+          this.options.append('Loop is not available in this runtime.', 'warning');
+          return;
+        }
+        const args = invocation.args.trim();
+        if (args === 'stop' || args === 'cancel') {
+          loopFlow.stop();
+          return;
+        }
+        if (!args) {
+          this.options.append(loopFlow.statusText());
+          return;
+        }
+        await loopFlow.start(args);
       },
       parent: async () => this.options.sessionFlow.activateParentSession(),
       btw: async (invocation) => {

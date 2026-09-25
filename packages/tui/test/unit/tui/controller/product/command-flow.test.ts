@@ -39,6 +39,12 @@ function createReadinessCommandFlow(options: {
   reloadTui?: () => Promise<void>;
   append?: (text: string, kind?: "info" | "warning" | "error") => void;
   queuedCount?: number;
+  loopFlow?: {
+    start: (task: string) => Promise<void>;
+    stop: () => void;
+    statusText: () => string;
+    isActive: () => boolean;
+  };
 }) {
   return new TuiCommandFlow({
     workspaceDir: "/workspace",
@@ -84,6 +90,7 @@ function createReadinessCommandFlow(options: {
     abortLiveTurn: vi.fn(async () => false),
     leaveUi: vi.fn(async () => undefined),
     whenReady: options.whenReady,
+    ...(options.loopFlow ? { loopFlow: options.loopFlow } : {}),
     ...(options.whenControllerReady
       ? { whenControllerReady: options.whenControllerReady }
       : {}),
@@ -232,6 +239,43 @@ describe("TuiCommandFlow", () => {
       }),
     );
     expect(completeSubmission).toHaveBeenCalledWith({ attachments: [] });
+  });
+
+  it("dispatches /loop <task>, /loop stop, and bare /loop status to the loop flow", async () => {
+    const start = vi.fn(async () => undefined);
+    const stop = vi.fn();
+    const statusText = vi.fn(() => "Loop active — working, iteration 0 of 10.");
+    const append = vi.fn();
+    const flow = createReadinessCommandFlow({
+      whenReady: async () => undefined,
+      hasSession: true,
+      append,
+      loopFlow: { start, stop, statusText, isActive: () => true },
+    });
+
+    await expect(flow.submit("/loop add tests")).resolves.toBe("consumed");
+    await expect(flow.submit("/loop stop")).resolves.toBe("consumed");
+    await expect(flow.submit("/loop")).resolves.toBe("consumed");
+
+    expect(start).toHaveBeenCalledWith("add tests");
+    expect(stop).toHaveBeenCalledOnce();
+    expect(append).toHaveBeenCalledWith("Loop active — working, iteration 0 of 10.");
+  });
+
+  it("warns when /loop is unavailable instead of submitting a turn", async () => {
+    const append = vi.fn();
+    const flow = createReadinessCommandFlow({
+      whenReady: async () => undefined,
+      hasSession: true,
+      append,
+    });
+
+    await expect(flow.submit("/loop add tests")).resolves.toBe("consumed");
+
+    expect(append).toHaveBeenCalledWith(
+      "Loop is not available in this runtime.",
+      "warning",
+    );
   });
 
   it("opens the unified background task center for the current Session", async () => {
