@@ -144,6 +144,7 @@
       "packages/local-runtime/test/unit/thread-goal/host-integration-four-fix-combination.test.ts",
       "packages/local-runtime/test/unit/thread-goal/host-integration-settlement.test.ts",
       "packages/local-runtime/test/unit/thread-goal/host-integration-verifier-charge-rearm.test.ts",
+      "packages/tui/test/unit/loop-flow.test.ts",
       "packages/tui/test/unit/runtime-event-normalizer.test.ts",
       "packages/tui/test/unit/tui-background-work-panel.test.ts",
       "packages/tui/test/unit/tui-composer.test.ts",

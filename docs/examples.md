@@ -33,6 +33,16 @@ review:
 
 The setting only changes review output text and retry prompts; it does not change the managed endpoint or provider region.
 
+### Loop until review passes
+
+`/loop <task>` runs the task, then automatically repeats `/review`-and-fix cycles on the current local changes until the review reports no findings, the run is interrupted, or the cap of ten review cycles is reached:
+
+```
+/loop Add a --verbose flag to the export command
+```
+
+Each `needs_changes` review sends its findings back as a fix request; a passing review ends the loop. Run `/loop` alone for status or `/loop stop` to cancel. The loop only watches the Session it was started in — switching Sessions or aborting a turn stops it.
+
 ## 2. Choose your own model
 
 Use `/model` in the interactive TUI to select a model or choose **+ Add 3rd-party provider…**; `/provider` manages saved connections. The known-provider picker labels Z.AI and Zhipu plans separately as **Coding Plan** and **API**. The regional default order puts Coding Plan first; remotely configured pinning can override that order. Choose the plan matching your key. On the model screen, review the Base URL or press **Ctrl+E** to edit it before testing. If the test fails, changes are not saved; the model and key draft remain available for editing and retry. Changing the URL requires another explicit test/save action and never triggers an automatic endpoint fallback.

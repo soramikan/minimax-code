@@ -27,6 +27,7 @@ import type { TuiRuntimeStateCoordinator } from './runtime-state-coordinator.js'
 import type { TuiSessionFlow } from '../session-flow.js';
 import type { TuiDelegationFlow } from '../delegation-flow.js';
 import type { TuiGoalFlow } from '../product/goal-flow.js';
+import type { TuiLoopFlow } from '../product/loop-flow.js';
 import { delayWithAbort } from '../support.js';
 import {
   captureTuiIncidentBestEffort,
@@ -78,6 +79,7 @@ export interface TuiRuntimeEventFlowOptions {
   readonly onLlmRetryChanged?: (event: TuiLlmRetryEvent | undefined) => void;
   readonly onRetryAvailabilityChanged?: (sessionId: string, retryable: boolean) => void;
   readonly goalFlow?: Pick<TuiGoalFlow, 'project' | 'refresh'>;
+  readonly loopFlow?: Pick<TuiLoopFlow, 'handleSettledRuntimeEvent'>;
   readonly updateFollowUpPanel: () => void;
   readonly onChanged: () => void;
   readonly append: AppendLocalCell;
@@ -412,6 +414,7 @@ export class TuiRuntimeEventFlow {
         interactionHandled,
       );
       if (terminalSettled) this.options.delegationFlow.handleSettledRuntimeEvent(event);
+      this.options.loopFlow?.handleSettledRuntimeEvent(event);
       await this.notifyTerminalEvent(event, currentSessionId);
     }
   }

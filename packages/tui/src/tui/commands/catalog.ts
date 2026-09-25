@@ -184,6 +184,13 @@ const COMMAND_SOURCES: readonly TuiCommandSource[] = [
     category: 'Capability',
   },
   {
+    name: 'loop',
+    description: 'Run a task, then repeat review-and-fix until the review passes',
+    category: 'Capability',
+    argumentHint: '<task | stop>',
+    getArgumentCompletions: argumentCompleter([['stop', 'Stop the active loop']]),
+  },
+  {
     name: 'parent',
     description: 'Return from a sub-agent session to its parent',
     category: 'Session',
