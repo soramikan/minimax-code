@@ -6,6 +6,10 @@ import type {
 } from '@mavis/agent-core/pi-turn-runner';
 import type { RuntimeEvent } from '@mavis/agent-core/protocol';
 import type { LocalCodeReviewAdapter } from '@mavis/agent-tools/desktop';
+import type {
+  ConversationSession,
+  RuntimeConversation,
+} from '@mavis/conversation-contract';
 import { logger as defaultLogger } from '../common/logger.js';
 import type { LocalSessionRecord } from '../sessions/controller.js';
 import { resolveLocalAppMode } from '../runtime/app-mode.js';
@@ -389,26 +393,32 @@ export class HostedReviewCapability {
     const conversation = this.options.conversation;
     if (!conversation) return { status: 'failed', errorMessage: 'Conversation is unavailable.' };
     if (signal?.aborted) return { status: 'aborted' };
-    const child = await conversation.lifecycle.createSession({
-      agentName: parent.agentName,
-      workspaceDir: parent.workspaceDir,
-      sessionType: 'branch',
-      sessionKind: 'task',
-      parentSessionId: parent.sessionId,
-      title: pickReviewLanguageText(preparedRead.prepared.responseLanguage, {
-        'zh-CN': '代码审查',
-        ja: 'コードレビュー',
-        en: 'Code review',
-      }),
-      visibility: 'hidden',
-      purpose: `code-review:${preparedRead.prepared.context.reviewRunId}`,
-      runLocation: parent.runLocation,
-      appMode: parent.appMode,
-      ...(parent.effectiveModel !== undefined ? { effectiveModel: parent.effectiveModel } : {}),
-      ...(parent.effectiveModelVariant !== undefined
-        ? { effectiveModelVariant: parent.effectiveModelVariant }
-        : {}),
-    });
+    // Reuse the most recent hidden review Session under this parent so repeat
+    // reviews (including /loop iterations) keep one consistent reviewer.
+    const child =
+      (await this.findReusableReviewSession(conversation, parent.sessionId)) ??
+      (await conversation.lifecycle.createSession({
+        agentName: parent.agentName,
+        workspaceDir: parent.workspaceDir,
+        sessionType: 'branch',
+        sessionKind: 'task',
+        parentSessionId: parent.sessionId,
+        title: pickReviewLanguageText(preparedRead.prepared.responseLanguage, {
+          'zh-CN': '代码审查',
+          ja: 'コードレビュー',
+          en: 'Code review',
+        }),
+        visibility: 'hidden',
+        purpose: `code-review:${preparedRead.prepared.context.reviewRunId}`,
+        runLocation: parent.runLocation,
+        appMode: parent.appMode,
+        ...(parent.effectiveModel !== undefined
+          ? { effectiveModel: parent.effectiveModel }
+          : {}),
+        ...(parent.effectiveModelVariant !== undefined
+          ? { effectiveModelVariant: parent.effectiveModelVariant }
+          : {}),
+      }));
     const promptReadHandoff = reserveReviewPromptRead(
       preparedRead.promptRead,
       this.options.internalTurnPromptReads?.(),
@@ -486,6 +496,26 @@ export class HostedReviewCapability {
       discardReviewPromptRead(promptReadHandoff, registeredTurnId);
       throw error;
     }
+  }
+
+  /**
+   * The newest hidden `code-review:` branch Session owned by the parent, if any.
+   * A reused reviewer keeps its own model binding and message history; its next
+   * Turn is still activated by the `code_review` origin on each submission.
+   */
+  private async findReusableReviewSession(
+    conversation: RuntimeConversation,
+    parentSessionId: string,
+  ): Promise<ConversationSession | undefined> {
+    const sessions = await conversation.query
+      .listSessions({
+        parentSessionId,
+        sessionType: 'branch',
+        includeHidden: true,
+        includePurposePrefix: 'code-review:',
+      })
+      .catch(() => [] as const);
+    return [...sessions].sort((left, right) => right.updatedAtMs - left.updatedAtMs)[0];
   }
 }
 

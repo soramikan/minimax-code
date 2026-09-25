@@ -126,6 +126,7 @@
       "packages/local-runtime/test/unit/local-runtime-host-output-safety-concurrency.test.ts",
       "packages/local-runtime/test/unit/local-output-safety-writer-v2-guide-review.test.ts",
       "packages/local-runtime/test/unit/review-preparation-language.test.ts",
+      "packages/local-runtime/test/unit/review-subagent-reuse.test.ts",
       "packages/agent-modules/goal/test/unit/thread-goal/continuation.test.ts",
       "packages/agent-modules/goal/test/unit/thread-goal/tool-impls.test.ts",
       "packages/local-runtime-v2/src/application/session/process-local-application.test.ts",
