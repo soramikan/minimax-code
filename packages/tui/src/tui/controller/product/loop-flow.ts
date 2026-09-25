@@ -196,19 +196,37 @@ export class TuiLoopFlow {
   }
 
   private submitLoopTurn(content: string, options: TuiSubmitOptions): void {
-    void this.options.controller
-      .submit(content, options)
-      .then(() => undefined)
-      .catch((error: unknown) => {
-        if (!this.state) return;
-        this.state = undefined;
-        this.options.append(
-          `Loop stopped: could not submit the next step (${
-            error instanceof Error ? error.message : String(error)
-          }).`,
-          'warning',
-        );
-        this.options.onChanged();
-      });
+    void this.scheduleSubmit(content, options);
+  }
+
+  private async scheduleSubmit(content: string, options: TuiSubmitOptions): Promise<void> {
+    // session.finish reaches this flow before the finished turn's submit()
+    // resolves, so the controller still reports the old turn as active. Wait
+    // briefly for it to unwind instead of racing the cleanup.
+    for (let waitedMs = 0; this.state && waitedMs < 5_000; waitedMs += 50) {
+      const snapshot = this.options.controller.snapshot();
+      if (
+        !snapshot.activeTurnId &&
+        snapshot.status !== 'running' &&
+        snapshot.status !== 'starting'
+      ) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (!this.state) return;
+    try {
+      await this.options.controller.submit(content, options);
+    } catch (error: unknown) {
+      if (!this.state) return;
+      this.state = undefined;
+      this.options.append(
+        `Loop stopped: could not submit the next step (${
+          error instanceof Error ? error.message : String(error)
+        }).`,
+        'warning',
+      );
+      this.options.onChanged();
+    }
   }
 }
