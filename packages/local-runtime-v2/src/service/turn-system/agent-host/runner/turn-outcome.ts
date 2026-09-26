@@ -1,10 +1,8 @@
 import { RespDataType, ToolCallStatus } from '@mavis/agent-core/protocol/agent-message';
 import { RuntimeEventStatus, RuntimeEventType, type IRuntimeEvent } from '@mavis/protocol';
 
+import { parseByokErrorAttribution } from '../../../model-system/resolution/byok-error-attribution.js';
 import type { LocalRuntimeTurnRuntimeOutcome } from '../execution/executor.js';
-
-const BYOK_ERROR_PREFIX = 'BYOK upstream error';
-const BYOK_UPSTREAM_ERROR_SOURCE = 'byok_upstream';
 
 export function deriveLocalTurnRuntimeOutcome(
   events: readonly IRuntimeEvent[],
@@ -105,12 +103,12 @@ function normalizeError(
   rawMessage: string | undefined,
   rawErrorCode: number | undefined,
 ): Omit<LocalRuntimeTurnRuntimeOutcome, 'status' | 'messageId' | 'waitingForUser'> {
-  const attributed = parseByokErrorStatus(rawMessage, rawErrorCode);
+  const attributed = parseByokErrorAttribution(rawMessage);
   if (attributed) {
     return {
       errorMessage: attributed.message,
-      errorCode: attributed.errorCode,
-      errorSource: BYOK_UPSTREAM_ERROR_SOURCE,
+      errorCode: attributed.errorCode ?? rawErrorCode ?? 50_000,
+      errorSource: attributed.errorSource,
       errorDetail: attributed.errorDetail,
       errorProviderId: attributed.errorProviderId,
     };
@@ -119,83 +117,6 @@ function normalizeError(
     ...(rawMessage ? { errorMessage: rawMessage } : {}),
     ...(typeof rawErrorCode === 'number' ? { errorCode: rawErrorCode } : {}),
   };
-}
-
-function parseByokErrorStatus(
-  rawMessage: string | undefined,
-  fallbackErrorCode: number | undefined,
-):
-  | {
-      readonly message: string;
-      readonly errorCode: number;
-      readonly errorDetail: string;
-      readonly errorProviderId: string;
-    }
-  | undefined {
-  if (!rawMessage) return undefined;
-  const structured = parseStructuredByokMessage(rawMessage, fallbackErrorCode);
-  if (structured) return structured;
-  const legacy = parseLegacyByokMessage(rawMessage);
-  if (!legacy) return undefined;
-  return {
-    message: rawMessage,
-    errorCode: fallbackErrorCode ?? 50_000,
-    errorProviderId: legacy.providerId,
-    errorDetail: legacy.detail,
-  };
-}
-
-function parseStructuredByokMessage(
-  rawMessage: string,
-  fallbackErrorCode: number | undefined,
-): ReturnType<typeof parseByokErrorStatus> {
-  if (!rawMessage.startsWith(BYOK_ERROR_PREFIX)) return undefined;
-  const start = rawMessage.indexOf('{');
-  if (start < 0) return undefined;
-  try {
-    return normalizeStructuredByokPayload(
-      JSON.parse(rawMessage.slice(start)) as Record<string, unknown>,
-      rawMessage,
-      fallbackErrorCode,
-    );
-  } catch {
-    return undefined;
-  }
-}
-
-function normalizeStructuredByokPayload(
-  payload: Readonly<Record<string, unknown>>,
-  rawMessage: string,
-  fallbackErrorCode: number | undefined,
-): ReturnType<typeof parseByokErrorStatus> {
-  const message = readString(payload, 'message') ?? rawMessage;
-  const legacy = parseLegacyByokMessage(message);
-  const errorProviderId = readString(payload, 'errorProviderId') ?? legacy?.providerId;
-  const errorDetail = readString(payload, 'errorDetail') ?? legacy?.detail;
-  if (!errorProviderId || !errorDetail) return undefined;
-  return {
-    message,
-    errorCode:
-      typeof payload.errorCode === 'number' ? payload.errorCode : (fallbackErrorCode ?? 50_000),
-    errorProviderId,
-    errorDetail,
-  };
-}
-
-function parseLegacyByokMessage(
-  message: string,
-): { readonly providerId: string; readonly detail: string } | undefined {
-  const match = /^BYOK provider (?<providerId>.+?) upstream error: (?<detail>[\s\S]*)$/u.exec(
-    message,
-  );
-  const providerId = match?.groups?.providerId?.trim();
-  const detail = match?.groups?.detail?.trim();
-  return providerId && detail ? { providerId, detail } : undefined;
-}
-
-function readString(record: Readonly<Record<string, unknown>>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function readRuntimeErrorCode(event: IRuntimeEvent): number | undefined {

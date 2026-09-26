@@ -639,6 +639,7 @@
     "packages/local-runtime-v2/src/application/session/session-title-policy.ts",
     "packages/local-runtime-v2/src/application/session/task-agent-binding-capture.ts",
     "packages/local-runtime-v2/src/application/session/task-agent-ready-inventory.ts",
+    "packages/local-runtime-v2/src/application/session/turn-lifecycle-event-observer.test.ts",
     "packages/local-runtime-v2/src/application/session/turn-lifecycle-event-observer.ts",
     "packages/local-runtime-v2/src/application/session/turn-message-delivery.ts",
     "packages/local-runtime-v2/src/application/session/view-contract.ts",

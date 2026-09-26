@@ -4,6 +4,7 @@ import {
   type Api,
   type Model,
   type ThinkingLevelMap,
+  type Transport,
 } from '@earendil-works/pi-ai';
 import type { StreamFn, ThinkingLevel as PiThinkingLevel } from '@earendil-works/pi-agent-core';
 import {
@@ -49,6 +50,7 @@ import {
   planCustomProviderResolution,
   planMinimaxApiResolution,
   readStringRecord,
+  readTransportOption,
 } from './model-resolver-byok.js';
 import {
   buildLocalProviderHeaders,
@@ -106,6 +108,7 @@ interface FinishResolveInput extends ModelIdentity {
   readonly runtimeProvider?: string;
   readonly configHeaders?: Record<string, string>;
   readonly modelCompat?: LocalModelCompatOverrides;
+  readonly transport?: Transport;
   readonly catalogModel?: Model<Api>;
   readonly authContext?: LocalRuntimeAuthContext;
   readonly routingContext?: ManagedBackendRoutingContext;
@@ -187,6 +190,9 @@ export class LocalModelResolver implements LocalModelResolverLike {
       byokProvider: credentials.authMode === 'oauth',
       customProvider: false,
       configHeaders: credentials.headers,
+      ...(readTransportOption(credentials.rawProviderOptions?.transport)
+        ? { transport: readTransportOption(credentials.rawProviderOptions?.transport) }
+        : {}),
       catalogModel: lookupLocalCatalogModel(provider, modelId),
       ...(authContext ? { authContext } : {}),
       ...(routingContext ? { routingContext } : {}),
@@ -242,6 +248,7 @@ export class LocalModelResolver implements LocalModelResolverLike {
       ...(fileApiGatewayAuth ? { fileApiGatewayAuth } : {}),
       ...(streamFn ? { streamFn } : {}),
       ...(fetchImpl ? { fetch: fetchImpl } : {}),
+      ...(input.transport ? { transport: input.transport } : {}),
       ...(thinking.exposedLevel ? { thinkingLevel: thinking.exposedLevel } : {}),
       ...(thinking.requestPatch ? { thinkingRequestPatch: thinking.requestPatch } : {}),
     };

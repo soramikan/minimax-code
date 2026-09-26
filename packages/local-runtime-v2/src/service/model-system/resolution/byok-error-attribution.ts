@@ -113,3 +113,86 @@ function errorText(raw: unknown): string {
   if (raw instanceof Error) return raw.message;
   return typeof raw === 'string' ? raw : '';
 }
+
+export interface ByokErrorAttribution {
+  /** Human-readable upstream detail message (`BYOK provider <id> upstream error: <detail>`). */
+  readonly message: string;
+  /** Classified code carried by the structured payload, when present. */
+  readonly errorCode?: number;
+  readonly errorSource: 'byok_upstream';
+  /** Sanitized upstream detail (tokens/keys redacted at format time). */
+  readonly errorDetail: string;
+  readonly errorProviderId: string;
+}
+
+/**
+ * Read back what {@link formatByokErrorMessage} embedded. Handles both the
+ * structured `BYOK upstream error: {json}` form and the legacy
+ * `BYOK provider <id> upstream error: <detail>` form so older persisted
+ * errors still attribute correctly.
+ */
+export function parseByokErrorAttribution(
+  rawMessage: string | undefined,
+): ByokErrorAttribution | undefined {
+  if (!rawMessage) return undefined;
+  if (rawMessage.startsWith(BYOK_ERROR_PREFIX)) {
+    const start = rawMessage.indexOf('{');
+    if (start >= 0) {
+      try {
+        const attributed = normalizeStructuredPayload(
+          JSON.parse(rawMessage.slice(start)) as Record<string, unknown>,
+          rawMessage,
+        );
+        if (attributed) return attributed;
+      } catch {
+        // Fall through to the legacy shape below.
+      }
+    }
+  }
+  const legacy = parseLegacyMessage(rawMessage);
+  return legacy
+    ? {
+        message: rawMessage,
+        errorSource: 'byok_upstream',
+        errorDetail: legacy.detail,
+        errorProviderId: legacy.providerId,
+      }
+    : undefined;
+}
+
+function normalizeStructuredPayload(
+  payload: Readonly<Record<string, unknown>>,
+  rawMessage: string,
+): ByokErrorAttribution | undefined {
+  const message = readPayloadString(payload, 'message') ?? rawMessage;
+  const legacy = parseLegacyMessage(message);
+  const errorProviderId = readPayloadString(payload, 'errorProviderId') ?? legacy?.providerId;
+  const errorDetail = readPayloadString(payload, 'errorDetail') ?? legacy?.detail;
+  if (!errorProviderId || !errorDetail) return undefined;
+  return {
+    message,
+    ...(typeof payload.errorCode === 'number' ? { errorCode: payload.errorCode } : {}),
+    errorSource: 'byok_upstream',
+    errorDetail,
+    errorProviderId,
+  };
+}
+
+function parseLegacyMessage(
+  message: string,
+): { readonly providerId: string; readonly detail: string } | undefined {
+  const match = /^BYOK provider (?<providerId>.+?) upstream error: (?<detail>[\s\S]*)$/u.exec(
+    message,
+  );
+  const providerId = match?.groups?.providerId?.trim();
+  const detail = match?.groups?.detail?.trim();
+  return providerId && detail ? { providerId, detail } : undefined;
+}
+
+function readPayloadString(
+  record: Readonly<Record<string, unknown>>,
+  key: string,
+): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}

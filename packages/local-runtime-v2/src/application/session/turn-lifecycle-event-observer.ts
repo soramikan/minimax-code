@@ -5,6 +5,7 @@ import {
 } from '@mavis/agent-core/protocol';
 
 import type { SessionRepository } from '../../service/session-system/index.js';
+import { parseByokErrorAttribution } from '../../service/model-system/resolution/byok-error-attribution.js';
 import type {
   AgentEventBestEffortObserver,
   AgentEventContext,
@@ -150,15 +151,23 @@ export class SessionTurnLifecycleEventObserver implements AgentEventBestEffortOb
     }
     const error = event.payload.error;
     const message = terminalErrorMessage(event);
+    const byok = parseByokErrorAttribution(message);
     this.options.publish({
       type: 'session.error',
       payload: {
         ...common,
         status: 'error',
-        ...(message ? { error: message } : {}),
+        ...(message ? { error: byok?.message ?? message } : {}),
         ...(typeof error?.code === 'number' ? { errorCode: error.code } : {}),
-        ...(error ? { errorSource: 'agent-runtime' } : {}),
-        ...(error?.details ? { errorDetail: error.details } : {}),
+        ...(byok
+          ? { errorSource: byok.errorSource }
+          : error
+            ? { errorSource: 'agent-runtime' }
+            : {}),
+        ...(byok?.errorDetail ?? error?.details
+          ? { errorDetail: byok?.errorDetail ?? error?.details }
+          : {}),
+        ...(byok ? { errorProviderId: byok.errorProviderId } : {}),
       },
     });
   }

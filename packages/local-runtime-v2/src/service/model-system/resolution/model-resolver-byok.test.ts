@@ -5,6 +5,7 @@ import {
   planCustomProviderResolution,
   planMinimaxApiResolution,
   readStringRecord,
+  readTransportOption,
 } from './model-resolver-byok.js';
 
 const FALLBACK_CATALOG = {
@@ -201,6 +202,66 @@ describe('custom BYOK planning', () => {
       contextWindow: 5,
       maxTokens: 6,
     });
+  });
+
+  it.each(['sse', 'websocket', 'websocket-cached', 'auto'] as const)(
+    'carries a declared %s transport into the resolution plan',
+    (transport) => {
+      const plan = planCustomProviderResolution({
+        provider: 'custom_provider:openai-codex',
+        providerKey: 'openai-codex',
+        modelId: 'gpt-6-luna',
+        byok: {
+          custom_provider: {
+            'openai-codex': {
+              api: 'openai-codex-responses',
+              kind: 'oauth',
+              options: {
+                baseURL: 'https://chatgpt.com/backend-api',
+                authMode: 'oauth',
+                transport,
+              },
+              models: { 'gpt-6-luna': {} },
+            },
+          },
+        },
+      });
+      expect(plan).toMatchObject({ transport });
+    },
+  );
+
+  it.each(['bogus', 'SSE', 5, true, {}, []])(
+    'ignores an unsupported transport value %j',
+    (transport) => {
+      const plan = planCustomProviderResolution({
+        provider: 'custom_provider:openai-codex',
+        providerKey: 'openai-codex',
+        modelId: 'gpt-6-luna',
+        byok: {
+          custom_provider: {
+            'openai-codex': {
+              api: 'openai-codex-responses',
+              kind: 'oauth',
+              options: {
+                baseURL: 'https://chatgpt.com/backend-api',
+                authMode: 'oauth',
+                transport,
+              },
+              models: { 'gpt-6-luna': {} },
+            },
+          },
+        },
+      });
+      expect(plan?.transport).toBeUndefined();
+    },
+  );
+
+  it('reads a transport only from the declared option set', () => {
+    expect(readTransportOption('sse')).toBe('sse');
+    expect(readTransportOption('auto')).toBe('auto');
+    expect(readTransportOption(' websocket ')).toBeUndefined();
+    expect(readTransportOption(undefined)).toBeUndefined();
+    expect(readTransportOption(0)).toBeUndefined();
   });
 });
 

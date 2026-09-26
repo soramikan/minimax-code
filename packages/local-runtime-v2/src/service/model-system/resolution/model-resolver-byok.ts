@@ -1,4 +1,4 @@
-import type { Api } from '@earendil-works/pi-ai';
+import type { Api, Transport } from '@earendil-works/pi-ai';
 import { MINIMAX_API_MODEL_CATALOG, getRuntimeRegion } from '@mavis/config';
 
 import type {
@@ -32,6 +32,7 @@ export interface ByokResolutionPlan {
   readonly maxTokens: number;
   readonly configHeaders?: Record<string, string>;
   readonly modelCompat?: LocalModelCompatOverrides;
+  readonly transport?: Transport;
 }
 
 export function planMinimaxApiResolution(input: {
@@ -88,6 +89,7 @@ export function planCustomProviderResolution(input: {
     readStringRecord(modelConfig.headers),
   );
   const modelCompat = readModelCompat(modelConfig.compat);
+  const transport = readTransportOption(config.options?.transport);
   return {
     provider: input.provider,
     api: resolveCustomProviderApi(config.api),
@@ -95,7 +97,15 @@ export function planCustomProviderResolution(input: {
     ...customProviderLimits(modelConfig),
     ...(configHeaders ? { configHeaders } : {}),
     ...(modelCompat ? { modelCompat } : {}),
+    ...(transport ? { transport } : {}),
   };
+}
+
+const TRANSPORT_OPTIONS = new Set<string>(['auto', 'sse', 'websocket', 'websocket-cached']);
+
+/** Pass through only values the pi stream layer understands; anything else falls back to auto. */
+export function readTransportOption(value: unknown): Transport | undefined {
+  return typeof value === 'string' && TRANSPORT_OPTIONS.has(value) ? (value as Transport) : undefined;
 }
 
 function resolveCustomProviderCredentials(

@@ -14,6 +14,7 @@ import type {
   ImageContent,
   Model,
   SimpleStreamOptions,
+  Transport,
 } from '@earendil-works/pi-ai';
 import type { IRuntimeEvent } from '@mavis/protocol';
 import type {
@@ -53,6 +54,13 @@ export interface LLMModelConfig {
   hostMaxOutputTokens?: number;
   headers?: Record<string, string>;
   fetch?: SimpleStreamOptions['fetch'];
+  /**
+   * Transport preference forwarded to the pi Agent (and from there into the
+   * stream options). Only providers that read `options.transport` act on it —
+   * today that is `openai-codex-responses` (`sse` disables the cached
+   * WebSocket session transport). Omitted keeps `auto`.
+   */
+  transport?: Transport;
   /** Provider payload transform for the main assistant response. */
   payloadTransform?: SimpleStreamOptions['onPayload'];
   /**
