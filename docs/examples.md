@@ -164,6 +164,17 @@ This is account OAuth, not an API key; do not enter an OpenAI API key here — u
 
 Credentials live in MCode's own data directory as `codex-auth.json` (see [Accounts and data](installation.md#accounts-and-data)). The Codex CLI credential file `~/.codex/auth.json` is not read or shared; both tools keep independent sign-ins. Access tokens refresh automatically.
 
+By default Codex requests reuse a per-session WebSocket connection. If turns intermittently fail with error code `50113` (a mid-stream WebSocket drop, for example `WebSocket closed 1012`), pin the provider to plain HTTP streaming instead:
+
+```yaml
+custom_provider:
+  openai-codex:
+    options:
+      transport: sse
+```
+
+Accepted values are `auto` (the default, prefers the WebSocket transport), `sse`, `websocket`, and `websocket-cached`; any other value is ignored. The option is read at resolution time — restart MCode after editing. `sse` removes the cached-socket failure class entirely at the cost of the WebSocket transport's lower overhead per request.
+
 ## 3. Search and image input
 
 For a custom BYOK model, declare image input support explicitly when adding the

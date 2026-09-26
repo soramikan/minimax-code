@@ -3,7 +3,7 @@
 // into concrete credentials + limits, without touching the legacy provider
 // tree path. Custom providers never consult the Pi catalog by name; missing
 // limits use the dedicated BYOK fallbacks (not the legacy 2048 default).
-import type { Api } from '@earendil-works/pi-ai';
+import type { Api, Transport } from '@earendil-works/pi-ai';
 import { MINIMAX_API_MODEL_CATALOG } from '@mavis/config';
 
 import type {
@@ -39,6 +39,7 @@ export interface ByokResolutionPlan {
   contextWindow: number;
   maxTokens: number;
   configHeaders?: Record<string, string>;
+  transport?: Transport;
 }
 
 type ResolvedByokResolutionPlan = Omit<ByokResolutionPlan, 'apiKey' | 'authProvider'> & {
@@ -145,7 +146,17 @@ export function planCustomProviderResolution(input: {
     contextWindow: modelConfig.limit?.context ?? BYOK_FALLBACK_MODEL_LIMITS.contextWindow,
     maxTokens: modelConfig.limit?.output ?? BYOK_FALLBACK_MODEL_LIMITS.maxTokens,
     ...(configHeaders ? { configHeaders } : {}),
+    ...(readTransportOption(cfg.options?.transport)
+      ? { transport: readTransportOption(cfg.options?.transport) }
+      : {}),
   };
+}
+
+const TRANSPORT_OPTIONS = new Set<string>(['auto', 'sse', 'websocket', 'websocket-cached']);
+
+/** Pass through only values the pi stream layer understands; anything else falls back to auto. */
+export function readTransportOption(value: unknown): Transport | undefined {
+  return typeof value === 'string' && TRANSPORT_OPTIONS.has(value) ? (value as Transport) : undefined;
 }
 
 function resolveCustomProviderApi(value: unknown): Api {

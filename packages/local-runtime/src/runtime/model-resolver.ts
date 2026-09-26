@@ -1,5 +1,5 @@
 import { ThinkingLevel, type IAgentConfig, type IModelRef } from '@mavis/protocol';
-import type { Api, Model } from '@earendil-works/pi-ai';
+import type { Api, Model, Transport } from '@earendil-works/pi-ai';
 import type { ThinkingLevel as PiThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { LLMModelConfig } from '@mavis/agent-core/pi-turn-runner';
 import { withOpenCodeGoHeaders, withOpenRouterAttributionHeaders } from '@mavis/shared';
@@ -26,6 +26,7 @@ import {
   planCustomProviderResolution,
   planMinimaxApiResolution,
   readStringRecord,
+  readTransportOption,
   resolveByokResolutionPlan,
   type LocalByokProviderConfig,
 } from './model-resolver-byok.js';
@@ -329,6 +330,9 @@ export class LocalModelResolver implements LocalModelResolverLike {
       byokProvider: credentials.authMode === 'oauth',
       customProvider: false,
       configHeaders: credentials.headers,
+      ...(readTransportOption(credentials.rawProviderOptions?.transport)
+        ? { transport: readTransportOption(credentials.rawProviderOptions?.transport) }
+        : {}),
       catalogModel: lookupLocalCatalogModel(provider, modelId),
     });
   }
@@ -349,6 +353,7 @@ export class LocalModelResolver implements LocalModelResolverLike {
     customProvider: boolean;
     runtimeProvider?: string;
     configHeaders?: Record<string, string>;
+    transport?: Transport;
     catalogModel?: Model<Api>;
   }): LocalResolvedModelConfig {
     const { modelRef } = input;
@@ -489,6 +494,7 @@ export class LocalModelResolver implements LocalModelResolverLike {
       maxTokens: effectiveMaxTokens,
       streamFn,
       ...(this.transport.fetch ? { fetch: this.transport.fetch } : {}),
+      ...(input.transport ? { transport: input.transport } : {}),
       managedProvider: input.managedProvider,
       ...(headers ? { headers } : {}),
       ...(shouldPassThinkingLevel ? { thinkingLevel: piThinkingLevel } : {}),

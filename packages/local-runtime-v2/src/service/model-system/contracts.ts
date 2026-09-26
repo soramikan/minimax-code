@@ -77,6 +77,14 @@ export interface LocalProviderOptions {
   apiKey?: string;
   baseURL?: string;
   authMode?: ProviderAuthMode;
+  /**
+   * Provider transport preference. Honored only by providers that read
+   * `options.transport` — today `openai-codex-responses` (`sse` disables the
+   * cached WebSocket session transport and sends every request over a fresh
+   * HTTP stream, a mitigation for recurring mid-stream WebSocket drops).
+   * Accepted values: `auto`, `sse`, `websocket`, `websocket-cached`.
+   */
+  transport?: string;
   headers?: Record<string, string>;
   [key: string]: unknown;
 }

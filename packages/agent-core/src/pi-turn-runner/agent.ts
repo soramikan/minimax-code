@@ -85,6 +85,7 @@ export function newAgent(turn: turnState): Agent {
     ...(turn.input.shouldStopAfterTurn
       ? { shouldStopAfterTurn: turn.input.shouldStopAfterTurn }
       : {}),
+    ...(turn.llm.transport ? { transport: turn.llm.transport } : {}),
     ...(turn.llm.payloadTransform ? { onPayload: turn.llm.payloadTransform } : {}),
     ...(turn.llm.responseObserver ? { onResponse: turn.llm.responseObserver } : {}),
   });
