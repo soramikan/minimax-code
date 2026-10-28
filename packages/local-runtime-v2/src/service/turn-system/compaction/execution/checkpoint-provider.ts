@@ -10,11 +10,16 @@ import {
   type LLMRequestSettledEvent,
 } from '@mavis/agent-core/pi-turn-runner';
 import { createDefaultTokenEstimator } from '@mavis/context-manager';
+import { isLLMImageLimitMessage } from '@mavis/shared/llm-error-classifier';
 
 import type { CheckpointSession } from '../algorithm/compact-context.js';
 import type { PromptSnapshotSource } from '../../agent-host/contracts.js';
 import type { CheckpointGeneration } from '../algorithm/checkpoint-format.js';
-import { CheckpointInputTooLargeError, type CheckpointResponseContentKind } from '../contracts.js';
+import {
+  CheckpointCandidateMediaRejectedError,
+  CheckpointCandidateTooLargeError,
+  type CheckpointResponseContentKind,
+} from '../contracts.js';
 import {
   buildCheckpointControl,
   CHECKPOINT_SYSTEM_PROMPT,
@@ -77,10 +82,16 @@ export async function createCheckpointSession(
         systemPrompt,
       );
       if (isContextOverflow(final, options.model.contextWindow)) {
-        throw new CheckpointInputTooLargeError(final);
+        throw new CheckpointCandidateTooLargeError(final);
+      }
+      if (final.stopReason === 'error' && isLLMImageLimitMessage(final.errorMessage)) {
+        throw new CheckpointCandidateMediaRejectedError(final);
       }
       const generation = toGeneration(final);
       options.onGenerated?.(generation);
+      if (isOutputExhaustedWithoutText(generation)) {
+        throw new CheckpointCandidateTooLargeError(final, 'output_exhausted');
+      }
       return generation;
     },
   };
@@ -132,7 +143,10 @@ async function requestCheckpoint(
       outcome: input.signal?.aborted ? 'abort' : 'error',
       usageComplete: false,
     });
-    if (isExplicitInputTooLargeError(error)) throw new CheckpointInputTooLargeError(error);
+    if (isExplicitInputTooLargeError(error)) throw new CheckpointCandidateTooLargeError(error);
+    if (isLLMImageLimitMessage(error instanceof Error ? error.message : undefined)) {
+      throw new CheckpointCandidateMediaRejectedError(error);
+    }
     throw error;
   }
 }
@@ -259,6 +273,16 @@ async function readCheckpointSystemPrompt(source?: PromptSnapshotSource): Promis
   const builtinSnapshot = await source.captureBuiltin();
   const fallback = await source.read(builtinSnapshot, CHECKPOINT_SYSTEM_PROMPT_KEY);
   return fallback.kind === 'found' ? fallback.content : CHECKPOINT_SYSTEM_PROMPT;
+}
+
+/**
+ * A `length` stop with no checkpoint text means the shared output budget was
+ * spent before the summary began (typically on reasoning). Retrying the same
+ * candidate repeats the same spend, so it is normalized like overflow and the
+ * candidate ladder moves on. Truncated responses that carry text are unchanged.
+ */
+function isOutputExhaustedWithoutText(generation: CheckpointGeneration): boolean {
+  return generation.stopReason === 'length' && generation.text.trim() === '';
 }
 
 function toGeneration(final: AssistantMessage): CheckpointGeneration {

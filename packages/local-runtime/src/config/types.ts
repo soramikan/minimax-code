@@ -47,6 +47,7 @@ export interface LocalProviderConfig {
   name?: string;
   options?: LocalProviderOptions;
   models?: Record<string, LocalModelConfig>;
+  catalogModels?: Record<string, LocalModelConfig>;
   model_order?: string[];
 }
 
@@ -94,6 +95,7 @@ export interface LocalRuntimeConfig {
   asr?: Partial<AsrConfig>;
   contentReview?: Config['contentReview'];
   review?: Config['review'];
+  worktreeRefreshBeforeCreate?: boolean;
   /** Read-only projection. Sandbox writes use the dedicated transaction endpoint. */
   sandbox?: Config['sandbox'];
   askUser?: Config['askUser'];

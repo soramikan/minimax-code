@@ -4,6 +4,7 @@ export const MCODE_PROVIDER_API_FORMATS = [
   'anthropic-messages',
   'openai-completions',
   'openai-responses',
+  'google-generative-ai',
 ] as const;
 export type McodeProviderApiFormat = (typeof MCODE_PROVIDER_API_FORMATS)[number];
 
@@ -146,11 +147,12 @@ export interface McodeSaveProviderCandidateInput extends Omit<
   readonly skipConnectionTest?: boolean;
 }
 
-export interface McodeDiscoverProviderModelsInput {
-  readonly providerId: string;
-  readonly expectedRevision: string;
+export type McodeDiscoverProviderModelsInput = {
   readonly baseUrl: string;
-}
+} & (
+  | { readonly providerId: string; readonly expectedRevision: string }
+  | { readonly name: string; readonly apiKey: string; readonly apiFormat: McodeProviderApiFormat }
+);
 
 export interface McodeSaveProviderCandidateResult {
   readonly success: boolean;

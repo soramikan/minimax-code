@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import {
   mkdtempSync,
   mkdirSync,
+  chmodSync,
   rmSync,
   existsSync,
   readFileSync,
@@ -21,10 +22,18 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { withoutProxyEnvironment } from "./offline-environment.mjs";
 
 const cli = process.env.MCODE_TEST_CLI ?? fileURLToPath(new URL("../dist/cli.js", import.meta.url));
+// This case is 30+ serial CLI spawns, each booting the whole runtime, so its
+// wall-clock cost tracks machine speed rather than the transport it asserts.
+// A flat budget sized for an idle laptop turns any busy runner (parallel build,
+// shared CI host) into a `testTimeoutFailure` that reports a product failure
+// while every assertion would have passed. Budget it the way smoke.test.mjs
+// budgets runtime startup: a base allowance plus a Windows multiplier for
+// slower process spawn, rather than a number that only holds on one machine.
+const byokSerialTimeoutMs = process.platform === "win32" ? 360000 : 180000;
 // This fixture validates BYOK transport and real Runtime persistence, not model quality.
 test(
   "BYOK runs without managed login and resumes its saved conversation",
-  { timeout: 90000 },
+  { timeout: byokSerialTimeoutMs },
   async (t) => {
     const fixtureDir = mkdtempSync(path.join(tmpdir(), "minimax-code-byok-"));
     const dataDir = path.join(fixtureDir, "data");
@@ -154,6 +163,18 @@ test(
             : "Unexpected external request",
         );
       } finally {
+        // Hook snapshots deliberately use read-only directories. Restore only
+        // this isolated fixture's directory permissions before removing it.
+        const hookCache = path.join(dataDir, "v2", "plugin-hook-cache");
+        if (existsSync(hookCache)) {
+          const writable = (directory) => {
+            chmodSync(directory, 0o700);
+            for (const entry of readdirSync(directory, { withFileTypes: true })) {
+              if (entry.isDirectory()) writable(path.join(directory, entry.name));
+            }
+          };
+          writable(hookCache);
+        }
         rmSync(fixtureDir, { recursive: true, force: true });
       }
     });
@@ -294,7 +315,7 @@ test(
     }
     const configPath = path.join(dataDir, "config.yaml");
     const savedConfig = () => parseYaml(readFileSync(configPath, "utf8"));
-    assert.equal(savedConfig().defaultModel, "minimax/MiniMax-M3");
+    assert.equal(savedConfig().defaultModel, "minimax/MiniMax-M3.1-Flash");
     assert.equal(savedConfig().custom_provider.fixture.models["fixture-model"].limit, undefined);
     assert.equal(selected.active, false);
     assert.equal(selected.models[0].contextLimit, undefined);
@@ -431,6 +452,30 @@ test(
       "--effort", "medium", "--timeout", "20s", "--max-steps", "1"]),
     /Available levels: low, high, max/);
     assert.equal(requests.length, beforeInvalidEffort, "Invalid effort must fail before transport");
+    // Real Plugin packages exercise command execution and all three output adapters.
+    const hookMarkers = ["minimax", "claude", "codex"].map((format) => {
+      const name = `hook-notice-${format}`;
+      const root = path.join(dataDir, "plugins", name);
+      const manifestDir = format === "minimax" ? ".minimax-plugin" : `.${format}-plugin`;
+      mkdirSync(path.join(root, manifestDir), { recursive: true });
+      mkdirSync(path.join(root, "hooks"));
+      const marker = `HOOK_DISPLAY_ONLY_${format.toUpperCase()}`;
+      const manifest = format === "minimax" ? {
+        schemaVersion: 1, name, version: "1.0.0", description: "Synthetic Hook display fixture",
+        author: "Test", icon: "icon.png", category: "Code", exampleQueries: ["Reply OK"],
+        apps: [], mcpServers: [], skills: [], hooks: ["hooks/hooks.json"],
+      } : { name, version: "1.0.0" };
+      writeFileSync(path.join(root, manifestDir, "plugin.json"), JSON.stringify(manifest));
+      writeFileSync(path.join(root, "icon.png"), Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5N8AAAAASUVORK5CYII=", "base64"));
+      writeFileSync(path.join(root, "hooks", "hooks.json"), JSON.stringify({ hooks: { Stop: [{ hooks: [{
+        type: "command", command: 'node "${PLUGIN_ROOT}/notice.cjs"', timeout: 5,
+      }] }] } }));
+      writeFileSync(path.join(root, "notice.cjs"),
+        `process.stdout.write(JSON.stringify({systemMessage: ${JSON.stringify(marker)}}));`);
+      return marker;
+    });
+    const beforeFirst = requests.length;
     const modelArgs = ["--model", `${selected.providerId}/fixture-model`];
     // The first run must work through the saved default, without --model or managed login.
     const first = await run([
@@ -442,6 +487,9 @@ test(
       "1",
     ]);
     assert.match(first, /LOCAL_BYOK_OK/);
+    assert.equal(requests.slice(beforeFirst).filter((r) => r.body.stream).length, 1,
+      "Display-only Hooks must not start another model request");
+    for (const marker of hookMarkers) assert.ok(!first.includes(marker));
     await assert.rejects(run([
       'exec', 'Managed model still requires its own login',
       '--model', 'minimax/MiniMax-M3', '--timeout', '20s', '--max-steps', '1',
@@ -470,6 +518,34 @@ test(
         requests.map((r) => ({ url: r.url, keys: Object.keys(r.body) })),
       ),
     );
+    assert.equal(requests.slice(beforeResume).filter((r) => r.body.stream).length, 1);
+    for (const marker of hookMarkers) {
+      assert.ok(!second.includes(marker), "Hook notices must not become the final answer");
+      assert.ok(!JSON.stringify(requests.slice(beforeResume)).includes(marker),
+        "The resumed provider request must not contain Hook display messages");
+    }
+    const displayDb = new Database(dbPath, { readonly: true });
+    try {
+      const notices = displayDb.prepare("SELECT data_json FROM local_runtime_message_rows").all()
+        .map((row) => JSON.parse(row.data_json))
+        .filter((message) => typeof message.msg_content === "string" &&
+          hookMarkers.some((marker) => message.msg_content.includes(marker)));
+      assert.equal(notices.length, 2, "Both turns must persist a Hook notice before CLI shutdown");
+      assert.notEqual(notices[0].msg_id, notices[1].msg_id);
+      for (const message of notices) {
+        const notice = JSON.parse(message.msg_content);
+        assert.equal(notice.eventType, "runtime.warning");
+        assert.equal(notice.category, "system-message");
+        for (const marker of hookMarkers) assert.ok(notice.message.includes(marker));
+      }
+    } finally { displayDb.close(); }
+    const historyRoot = path.join(dataDir, "v2", "sessions");
+    const canonicalFiles = readdirSync(historyRoot, { recursive: true }).filter((file) => file.endsWith("messages.jsonl"));
+    assert.ok(canonicalFiles.length > 0);
+    const canonical = canonicalFiles.map((file) => readFileSync(path.join(historyRoot, file), "utf8")).join("\n");
+    assert.ok(canonical.includes("SOURCE_REPOSITORY_TEST"));
+    for (const marker of hookMarkers) assert.ok(!canonical.includes(marker),
+      "Canonical history used by subsequent turns and compaction must not contain Hook notices");
     const toolStart = requests.length;
     await run([
       "exec",
@@ -533,6 +609,154 @@ test(
   // Node terminates children on Windows SIGINT instead of invoking their handler.
   { timeout: 45000, skip: process.platform === "win32" },
   cancellationTest("lock"),
+);
+
+test(
+  "lightweight mode stops safely when a provider emits an unoffered tool call",
+  { timeout: 45000 },
+  async (t) => {
+    const fixtureDir = mkdtempSync(path.join(tmpdir(), "minimax-code-lightweight-tool-"));
+    const dataDir = path.join(fixtureDir, "data");
+    const workspaceDir = path.join(fixtureDir, "workspace");
+    const homeDir = path.join(fixtureDir, "home");
+    for (const dir of [dataDir, workspaceDir, homeDir]) mkdirSync(dir);
+    const networkAudit = path.join(fixtureDir, "network-audit.log");
+    const marker = path.join(workspaceDir, "must-not-exist.txt");
+    let streamRequests = 0;
+    const server = createServer(async (req, res) => {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      const body = JSON.parse(raw);
+      if (req.url?.endsWith("/responses/input_tokens")) {
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ input_tokens: 1 }));
+        return;
+      }
+      assert.equal(body.stream, true);
+      assert.equal(body.tools, undefined, "Lightweight requests must not offer tools");
+      streamRequests += 1;
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (const chunk of [
+        {
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: "assistant",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "unoffered-write",
+                    type: "function",
+                    function: {
+                      name: "write",
+                      arguments: JSON.stringify({
+                        path: marker,
+                        content: "must not be written",
+                      }),
+                    },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        },
+        {
+          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        },
+      ]) {
+        res.write(
+          `data: ${JSON.stringify({
+            id: "fixture",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: "fixture",
+            ...chunk,
+          })}\n\n`,
+        );
+      }
+      res.end("data: [DONE]\n\n");
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(async () => {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+      rmSync(fixtureDir, { recursive: true, force: true });
+    });
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    writeFileSync(
+      path.join(dataDir, "config.yaml"),
+      stringifyYaml({
+        defaultModel: "custom_provider:fixture/fixture",
+        custom_provider: {
+          fixture: {
+            name: "fixture",
+            kind: "custom",
+            enabled: true,
+            api: "openai-completions",
+            options: {
+              apiKey: "synthetic-key",
+              baseURL: `${origin}/v1`,
+              authMode: "api-key",
+            },
+            models: { fixture: { limit: { context: 32768, output: 4096 } } },
+          },
+        },
+      }),
+    );
+    const child = spawn(
+      process.execPath,
+      [
+        cli,
+        "exec",
+        "Edit a local file.",
+        "--mode",
+        "lightweight",
+        "--permission",
+        "off",
+        "--cwd",
+        workspaceDir,
+        "--timeout",
+        "30s",
+        "--max-steps",
+        "4",
+      ],
+      {
+        cwd: workspaceDir,
+        env: {
+          ...withoutProxyEnvironment(process.env),
+          HOME: homeDir,
+          XDG_CONFIG_HOME: path.join(homeDir, "config"),
+          XDG_DATA_HOME: path.join(homeDir, "data"),
+          MINIMAX_DATA_DIR: dataDir,
+          MAVIS_DATA_DIR: dataDir,
+          MCODE_TEST_ALLOWED_ORIGIN: origin,
+          MCODE_TEST_NETWORK_AUDIT: networkAudit,
+          MCODE_TEST_MANAGED_OFFLINE: "1",
+          NODE_OPTIONS: `--import=${new URL("./network-deny.mjs", import.meta.url).href}`,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const [code] = await once(child, "close");
+    assert.equal(code, 0, `${stdout}\n${stderr}`);
+    assert.match(stdout, /tools, which are unavailable in lightweight mode/u);
+    assert.match(stdout, /mcode --mode standard/u);
+    assert.equal(streamRequests, 1, "The rejected tool call must not trigger another model step");
+    assert.equal(existsSync(marker), false, "An unoffered tool call must never execute");
+    assert.equal(existsSync(networkAudit), false, "No external requests are allowed");
+  },
 );
 
 test(

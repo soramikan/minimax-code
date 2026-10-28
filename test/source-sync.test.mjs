@@ -22,65 +22,100 @@ import { compareRuns, exitCodeForStatus, renderReport, spread, validateRun, vali
 import { copyMcodeToolsArtifact, downloadMcodeToolsArtifact, MCODE_TOOLS_ARTIFACT } from '../scripts/lib/mcode-tools-artifact.mjs';
 import { checkWindowsSourceLocation, runWindowsSourceLocationCheck } from '../scripts/check-windows-source-location.mjs';
 
-test('Windows source preflight accepts localized fsutil labels', () => {
-  const result = checkWindowsSourceLocation({
-    platform: 'win32',
-    cwd: 'C:\\repo',
-    execFile: (_command, args) => args[1] === 'drivetype'
-      ? 'Laufwerkstyp: DRIVE_FIXED\n'
-      : 'Dateisystemname: NTFS\n',
-  });
-  assert.deepEqual(result, { ok: true, skipped: false });
+test('Windows source preflight accepts local NTFS without parsing fsutil display text', () => {
+  for (const fsutilOutput of ['E: - Fixed Drive\r\n', 'E: - Festplatte\r\n', new Error('Error 5: Access is denied')]) {
+    const calls = [];
+    const result = checkWindowsSourceLocation({
+      platform: 'win32', cwd: 'E:\\src\\minimax-code', allowNonFixed: false,
+      execFile: (command, args, options) => {
+        calls.push(command);
+        if (command === 'fsutil') {
+          if (fsutilOutput instanceof Error) throw fsutilOutput;
+          return args[1] === 'drivetype' ? fsutilOutput : 'File System Name : NTFS\r\n';
+        }
+        assert.equal(command, 'powershell.exe');
+        assert.deepEqual(args.slice(0, 4), ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command']);
+        assert.match(args[4], /\$ErrorActionPreference\s*=\s*'Stop'/);
+        assert.match(args[4], /Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='E:'"/);
+        assert.match(args[4], /ConvertTo-Json -Compress/);
+        assert.equal(options.encoding, 'utf8');
+        assert.ok(options.timeout > 0);
+        return '\r\n{"DeviceID":"E:","DriveType":3,"FileSystem":"NTFS"}\r\n';
+      },
+    });
+    assert.deepEqual(result, { ok: true, skipped: false });
+    assert.deepEqual(calls, ['powershell.exe']);
+  }
 });
 
-test('Windows source preflight requires a local NTFS checkout', () => {
-  const calls = [];
-  const execFile = (command, args) => {
-    calls.push([command, args]);
-    if (args[1] === 'drivetype') return 'Drive type is : DRIVE_FIXED\n';
-    return 'File System Name             : NTFS\n';
-  };
-  assert.deepEqual(
-    checkWindowsSourceLocation({ platform: 'win32', cwd: 'C:\\repo', execFile }),
-    { ok: true, skipped: false },
-  );
-  assert.deepEqual(calls.map(([command, args]) => [command, args[1], args[2]]), [
-    ['fsutil', 'drivetype', 'C:'],
-    ['fsutil', 'volumeinfo', 'C:'],
-  ]);
+const checkWindowsVolume = (disk, allowNonFixed = false) => checkWindowsSourceLocation({
+  platform: 'win32', cwd: 'C:\\repo', allowNonFixed,
+  execFile: () => JSON.stringify({ DeviceID: 'C:', DriveType: 3, FileSystem: 'NTFS', ...disk }),
 });
 
-test('Windows source preflight rejects unsupported volumes clearly', () => {
-  const run = (driveType, volumeInfo, cwd = 'C:\\repo', allowNonFixed = false) => checkWindowsSourceLocation({
-    platform: 'win32', cwd, allowNonFixed,
-    execFile: (_command, args) => args[1] === 'drivetype' ? driveType : volumeInfo,
-  });
-  assert.match(run('Drive type is : DRIVE_REMOTE\n', 'File System Name : NTFS\n').reason, /not a local fixed drive/);
-  assert.deepEqual(
-    run('Drive type is : DRIVE_REMOTE\n', 'File System Name : NTFS\n', 'C:\\repo', true),
-    { ok: true, skipped: false },
-  );
-  assert.match(run('Drive type is : DRIVE_FIXED\n', 'File System Name : NTFS\n', '\\\\server\\share\\repo').reason, /not a local drive-letter path/);
+test('Windows source preflight rejects unsupported drive types and file systems', () => {
+  for (const DriveType of [0, 1, 2, 4, 5, 6]) {
+    assert.match(checkWindowsVolume({ DriveType }).reason, /not a local fixed drive/);
+  }
+  for (const FileSystem of ['FAT32', 'exFAT', 'ReFS', '']) {
+    for (const allowNonFixed of [false, true]) {
+      assert.match(checkWindowsVolume({ FileSystem }, allowNonFixed).reason, /not formatted as NTFS/);
+    }
+  }
+  // Preserve the existing explicit runner override, but never use it in the
+  // positive fixed-drive regression or native-host acceptance case.
+  assert.deepEqual(checkWindowsVolume({ DriveType: 4 }, true), { ok: true, skipped: false });
+});
+
+test('Windows source preflight rejects UNC paths before querying Windows', () => {
+  for (const allowNonFixed of [false, true]) {
+    const result = checkWindowsSourceLocation({
+      platform: 'win32', cwd: '\\\\server\\share\\repo', allowNonFixed,
+      execFile: () => assert.fail('must not query a UNC path'),
+    });
+    assert.match(result.reason, /not a local drive-letter path/);
+  }
+});
+
+test('Windows source preflight fails closed on missing, malformed or mismatched CIM data', () => {
+  for (const output of [
+    '', 'not JSON', 'null', '[]', '{}',
+    '{"DeviceID":"D:","DriveType":3,"FileSystem":"NTFS"}',
+    '{"DeviceID":"C:","DriveType":"3","FileSystem":"NTFS"}',
+    '{"DeviceID":"C:","DriveType":3,"FileSystem":null}',
+    '{"DeviceID":"C:","DriveType":null,"FileSystem":"NTFS"}',
+    '[{"DeviceID":"C:","DriveType":3,"FileSystem":"NTFS"}]',
+  ]) {
+    for (const allowNonFixed of [false, true]) {
+      const result = checkWindowsSourceLocation({
+        platform: 'win32', cwd: 'C:\\repo', allowNonFixed, execFile: () => output,
+      });
+      assert.equal(result.ok, false, output);
+      assert.match(result.reason, /could not verify the checkout volume/);
+    }
+  }
+  assert.deepEqual(checkWindowsVolume({ DeviceID: 'c:', FileSystem: 'ntfs' }), { ok: true, skipped: false });
 });
 
 test('Windows source preflight is a no-op on non-Windows platforms', () => {
   assert.deepEqual(
-    checkWindowsSourceLocation({ platform: 'linux', execFile: () => assert.fail('must not run fsutil') }),
+    checkWindowsSourceLocation({ platform: 'linux', execFile: () => assert.fail('must not query Windows') }),
     { ok: true, skipped: true },
   );
 });
 
-test('Windows source preflight propagates a failed check to the CLI', () => {
-  const messages = [];
-  const result = runWindowsSourceLocationCheck({
-    platform: 'win32',
-    cwd: 'C:\\repo',
-    execFile: () => { throw new Error('fsutil unavailable'); },
-    report: (message) => messages.push(message),
-  });
-  assert.equal(result.ok, false);
-  assert.equal(messages.length, 1);
-  assert.match(messages[0], /fsutil unavailable/);
+test('Windows source preflight reports command, permission and timeout failures to the CLI', () => {
+  for (const error of [new Error('spawn powershell.exe ENOENT'), new Error('Access is denied'), new Error('ETIMEDOUT')]) {
+    const messages = [];
+    const result = runWindowsSourceLocationCheck({
+      platform: 'win32', cwd: 'C:\\repo', allowNonFixed: false,
+      execFile: () => { throw error; },
+      report: (message) => messages.push(message),
+    });
+    assert.equal(result.ok, false);
+    assert.equal(messages.length, 1);
+    assert.ok(messages[0].includes(error.message));
+  }
 });
 
 test('artifact download recovers from TLS reset and interrupted response bodies', async () => {
@@ -951,7 +986,7 @@ test('source inventory rejects unregistered, missing and duplicate first-party t
   assert.deepEqual(suiteInventoryViolations(files, { capability: [existing, omitted] }), []);
 });
 
-test('suite runner preserves gate arguments and canonicalizes Windows temporary paths', t => {
+test('suite runner pins its locale, preserves gate arguments and canonicalizes Windows temporary paths', t => {
   const root = mkdtempSync(path.join(tmpdir(), 'suite-runner-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const directory of ['scripts/lib', 'test', 'node_modules/vitest', 'temporary'])
@@ -960,14 +995,24 @@ test('suite runner preserves gate arguments and canonicalizes Windows temporary 
     copyFileSync(new URL(`../${file}`, import.meta.url), path.join(root, file));
   writeFileSync(path.join(root, 'test/vitest-suites.json'), JSON.stringify({ suites: { fixture: ['test/example.test.ts'] } }));
   writeFileSync(path.join(root, 'node_modules/vitest/package.json'), JSON.stringify({ bin: { vitest: 'cli.cjs' } }));
-  writeFileSync(path.join(root, 'node_modules/vitest/cli.cjs'), 'console.log(JSON.stringify({args:process.argv.slice(2),temp:process.env.TEMP,tmp:process.env.TMP,cwd:process.cwd()})); process.exit(17);');
+  writeFileSync(path.join(root, 'node_modules/vitest/cli.cjs'), 'console.log(JSON.stringify({args:process.argv.slice(2),temp:process.env.TEMP,tmp:process.env.TMP,cwd:process.cwd(),lang:process.env.LANG,language:process.env.LANGUAGE,lcAll:process.env.LC_ALL,lcMessages:process.env.LC_MESSAGES,locale:Intl.DateTimeFormat().resolvedOptions().locale})); process.exit(17);');
   const alias = path.join(root, 'temporary-alias');
   symlinkSync(path.join(root, 'temporary'), alias, process.platform === 'win32' ? 'junction' : 'dir');
   for (const platform of ['linux', 'darwin', 'win32']) {
     const preload = path.join(root, 'platform.cjs');
     writeFileSync(preload, `Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} });`);
     const result = spawnSync(process.execPath, ['--require', preload, path.join(root, 'scripts/run-vitest-suite.mjs'), 'fixture'], {
-      encoding: 'utf8', env: { ...process.env, TEMP: alias, TMP: alias, TMPDIR: alias },
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        LANG: 'zh_CN.UTF-8',
+        LANGUAGE: 'zh_CN:zh',
+        LC_ALL: 'zh_CN.UTF-8',
+        LC_MESSAGES: 'zh_CN.UTF-8',
+        TEMP: alias,
+        TMP: alias,
+        TMPDIR: alias,
+      },
     });
     assert.equal(result.status, 17, result.stderr);
     const child = JSON.parse(result.stdout);
@@ -977,6 +1022,16 @@ test('suite runner preserves gate arguments and canonicalizes Windows temporary 
     const expected = platform === 'win32' ? realpathSync.native(alias) : alias;
     assert.equal(child.temp, expected);
     assert.equal(child.tmp, expected);
+    assert.deepEqual(
+      {
+        lang: child.lang,
+        language: child.language,
+        lcAll: child.lcAll,
+        lcMessages: child.lcMessages,
+        locale: child.locale,
+      },
+      { lang: 'C', language: 'C', lcAll: 'C', lcMessages: 'C', locale: 'en-US' },
+    );
   }
 });
 

@@ -1,5 +1,8 @@
 # Examples
 
+Try the [Pocket Pet walkthrough](../examples/pocket-pet) for a visual example with two real requests: add a focus timer, then change pause to a long press. It includes a starter, finished implementation, and tests. No hardware is required.
+
+
 Build the project using the [installation guide](installation.md). Run the `pnpm mcode` commands below from the source root. For interactive tasks, open the target project directory and launch the built CLI by absolute path.
 
 ## 1. Edit code and run tests
@@ -60,6 +63,8 @@ Use `/model` in the interactive TUI to select a model or choose **+ Add 3rd-part
 
 Preset IDs come from models.dev and do not select entries in the bundled inference registry. Onboarding saves the chosen URL under `custom_provider`; subsequent requests use that saved URL.
 
+In **Custom provider**, enter the name, Base URL, protocol, and API key first. Then choose **Import models from /models** to fetch the list using that key. Search and select a model to test; a successful test saves all imported models and selects the chosen one. Importing alone does not save configuration. If discovery fails or returns no models, retry, press **Esc** to edit the key, or choose **Enter a model ID manually**. Saved connections also support **refresh models** in `/provider`.
+
 Before adding a custom provider, set a key in your current shell rather than putting it in command arguments or source:
 
 ```bash
@@ -105,6 +110,17 @@ pnpm mcode provider list --json
 ### Third-party relays and custom auth headers
 
 Providers created by `mcode provider add` are stored under `custom_provider` in the active profile's `config.yaml`. That tree is the supported home for any endpoint other than the official MiniMax API; `minimax_api` is reserved for the official endpoint and keeps its fixed authentication scheme.
+
+Google-compatible endpoints use Pi's native Google adapter. Add the model manually with a base URL ending at the API version (not `/models`):
+
+```bash
+mcode provider add --name "OpenCode Go Gemini" \
+  --base-url https://opencode.ai/inference/go/v1 \
+  --api-format google-generative-ai --model gemini-4-argon-contributor \
+  --api-key-env OPENCODE_API_KEY --use
+```
+
+Google requests use `x-goog-api-key`. Model requests, tool calls and thinking parameters are handled by Pi.
 
 Authentication follows the API format: `openai-completions` and `openai-responses` send `Authorization: Bearer <key>`, and `anthropic-messages` sends the key as `x-api-key`. A relay that expects Bearer authentication on an OpenAI-compatible endpoint therefore needs no extra configuration. If a relay only exposes an Anthropic-compatible endpoint (`/v1/messages`) and requires Bearer authentication, add explicit headers to the provider entry in `config.yaml`:
 
@@ -212,6 +228,23 @@ text-only again, remove `image` from `modalities.input` and remove or set
 declare image input support. Restart MCode after editing configuration and select
 the configured model with `/provider`, or use `exec --model` for a single run.
 
+Images stay in the conversation history, so a long session can carry more images
+than a provider accepts in one request. MCode sends only the 20 most recent images
+per request and replaces older ones with a short text note naming the original
+file; the stored history keeps every image. If your provider allows fewer images
+per request, set the limit on the model (Mistral's API is limited to 8
+automatically):
+
+```yaml
+custom_provider:
+  my-vision-provider:
+    models:
+      my-vision-model:
+        capabilities:
+          support_image: true
+          max_images_per_request: 8
+```
+
 After signing in to MiniMax, try a task that explicitly requires search:
 
 > Use web_search to find the official Node.js test runner documentation. Summarize how to run tests and include the source URL. If the tool is unavailable, say so.
@@ -230,6 +263,8 @@ The image is sent as input to the selected model service. Use content suitable f
 See [capability coverage](tui-capabilities.md) for custom MCP, managed connectors, and media tools, and the [authenticated project MCP walkthrough](#5-connect-an-authenticated-project-mcp-server) below for your own remote server.
 
 ## 4. Manage plugins
+
+Synchronous Hooks can show [TUI-only messages](hooks.md) with `systemMessage`, including notices after a normal Stop.
 
 Open `/plugins` inside the TUI, or run `mcode plugin` from a shell to open that panel. For a source build, use `pnpm mcode plugin` from the source root instead; the commands below use the installed `mcode` executable.
 

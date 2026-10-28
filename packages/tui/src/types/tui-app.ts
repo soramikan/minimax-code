@@ -23,6 +23,7 @@ import type { TuiExternalTargetOpener } from '../host/open-external.js';
 import type { TuiTranscriptExporter } from '../host/transcript-export.js';
 import type { McodeBusinessTelemetry } from '../analytics/business-telemetry.js';
 import type { TuiNotificationSettings } from '../tui/platform/terminal-notifications.js';
+import type { TerminalCapabilities } from '../tui/platform/terminal-capabilities.js';
 import type { MavisRegion } from '@mavis/config';
 import type { TuiKeybindingOverride, TuiKeybindingRegistry } from '../tui/shell/keybindings.js';
 import type { FindRecentCodexSession } from '../host/recent-codex-session.js';
@@ -34,7 +35,10 @@ export interface CreateTuiAppOptions extends TuiUpdateOptions {
   workspaceRoots?: readonly TuiWorkspaceRoot[];
   homeDir?: string;
   terminal?: Terminal;
+  terminalCapabilities?: TerminalCapabilities;
   tuiMode?: TuiMode;
+  /** Rebuild terminal history when restoring a Session at process startup. */
+  clearScrollbackOnStart?: boolean;
   persistTuiMode?: (mode: TuiMode) => void;
   /** Saved theme selection, e.g. `aurora` or `aurora/dark`. */
   theme?: string;
@@ -60,7 +64,11 @@ export interface CreateTuiAppOptions extends TuiUpdateOptions {
   customStatusLine?: TuiCustomStatusLineConfig;
   /** Whether the idle conversation composer may show contextual Tips. Defaults to true. */
   showTips?: boolean;
+  /** Ordered terminal title items from tui.terminalTitle; null or [] disables updates. */
+  terminalTitle?: readonly string[] | null;
   notifications?: TuiNotificationSettings;
+  /** OSC 7501 program status from tui.programStatus; false disables reports. Defaults to true. */
+  programStatus?: boolean;
   /** Internal result-channel path; ignored unless statusLineItems enables build-mode. */
   automationResultPath?: string;
   productFeatures?: Partial<TuiProductFeatures>;

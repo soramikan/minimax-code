@@ -86,6 +86,7 @@ export interface TuiTokenUsage {
   outputTokens?: number;
   reasoningTokens?: number;
   requestDurationMs?: number;
+  decodeDurationMs?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
 }
@@ -111,7 +112,14 @@ export type TuiStreamEvent = (
       message?: string;
       turnId?: string;
     }
-  | { type: 'generic'; eventType: string; data: Record<string, unknown>; turnId?: string }
+  | {
+      type: 'generic';
+      eventType: string;
+      data: Record<string, unknown>;
+      turnId?: string;
+      messageId?: string;
+      timestamp?: number;
+    }
   | { type: 'messages-replaced'; messages: TuiMessage[]; turnId?: string }
   | { type: 'messages-rewound'; messageIds: string[]; turnId?: string }
   | { type: 'resync-required'; turnId?: string }
@@ -252,7 +260,14 @@ function projectWireSystemEvent(
   }
   const data = { ...parsed };
   delete data.eventType;
-  return { type: 'generic', eventType, data, turnId };
+  return compact({
+    type: 'generic' as const,
+    eventType,
+    data,
+    turnId: readString(message, ['turn_id', 'turnId']) ?? turnId,
+    messageId: readString(message, ['msg_id', 'msgId', 'id']),
+    timestamp: readNumber(message, ['timestamp']),
+  });
 }
 
 function projectLegacySessionStatus(
@@ -369,6 +384,7 @@ function normalizeTokenUsage(
     outputTokens: readNumber(usage, ['output_tokens', 'outputTokens']),
     reasoningTokens: readNumber(usage, ['reasoning', 'reasoning_tokens', 'reasoningTokens']),
     requestDurationMs: readNumber(usage, ['request_duration_ms', 'requestDurationMs']),
+    decodeDurationMs: readNumber(usage, ['decode_duration_ms', 'decodeDurationMs']),
     cacheReadTokens: readNumber(usage, ['cache_read', 'cacheRead', 'cache_read_tokens']),
     cacheWriteTokens: readNumber(usage, ['cache_write', 'cacheWrite', 'cache_write_tokens']),
   });
