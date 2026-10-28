@@ -1,8 +1,83 @@
 # TUI capability coverage
 
-The current capability target is **TUI 0.4.12**; see [version and evidence baseline](open-source-status.md#version-and-evidence-baseline) for the separate workspace and embedded-tool versions. “Restored” below describes implementation and assembly, not acceptance of every account or online service.
+The current capability target is **TUI 0.6.3**; see [version and evidence baseline](open-source-status.md#version-and-evidence-baseline) for the separate workspace and embedded-tool versions. “Restored” below describes implementation and assembly, not acceptance of every account or online service.
 
-The evidence column summarizes the historical TUI 0.3.11 restoration record from 2026-09-11. It does not claim fresh TUI 0.4.12 live-service acceptance. Use [current verification status](verification.md#current-source-verification-status) for checks run against the updated source and explicit NOT RUN boundaries.
+## Output speed
+
+The activity line and completed-turn summary show provider output tokens divided by
+model generation time. Timing starts at the first nonempty text, reasoning, or tool
+token and ends when the model finishes, excluding first-token wait and tool execution.
+Multiple responses in a turn use total tokens divided by total generation time.
+
+Speed appears after the first response with both provider usage and generation timing;
+streaming text is not estimated. Confirmed speed stays visible during later requests
+and tools, duplicate messages do not count twice, and a new turn resets the samples.
+Messages without generation timing are excluded. Values below 10 tok/s use one decimal
+place; higher values are rounded to integers. Batched provider events measure the
+observed generation window, not server hardware throughput.
+
+## Terminal titles and notifications
+
+The interactive TUI also reports [OSC 7501 program status](https://www.superlogical.com/rex/docs/build/program-status)
+with `app=mcode`: idle, working, done, error, or blocked on permission, a question,
+or login. It reuses the current session's runtime status, including queue handoffs,
+compaction and retries, and does not depend on status line items. Cancellation and
+suspension report idle; resume reapplies the current status. Completed and failed
+results remain reported when the TUI exits. Reports contain only `state`, `kind` and
+`app`, and are sent on changes, without a heartbeat or capability query, as
+permitted by protocol revision 0.4. Supporting terminals decide how to display
+them; other terminals should ignore the sequence. The protocol treats each
+multiplexer pane as its own terminal, so MCode does not wrap reports for tmux
+passthrough; the multiplexer must implement OSC 7501 for its panes. Redirected
+output, headless exec and ACP do not emit these reports. Set
+`tui.programStatus: false` to disable them. Existing title and notification
+settings remain independent of program status.
+
+Terminal titles show the current state, session name and MCode, for example
+`Needs approval | Fix login | MCode`, or `Needs login` while sign-in is required. Renaming or switching a session updates the
+title. Unnamed sessions use the project name and a short session ID. Titles are
+cleared when MCode exits or suspends and reapplied when it resumes.
+
+Configure these presentation settings in the MCode data directory's `config.yaml`:
+
+```yaml
+tui:
+  terminalTitle: [status, session-name, app-name]
+  programStatus: true
+  notifications:
+    when: unfocused
+    method: auto
+    events: [turn-complete, turn-failed, permission-required, question-required]
+```
+
+Title items can be ordered or omitted; `project-name` is also available. Set
+`terminalTitle` to `null` or `[]` to disable title updates. Unknown items are ignored.
+Notification `when` accepts `unfocused`, `always` or `never`; `method` accepts
+`auto`, `osc9`, `osc777` or `bel`. Omitting `events` enables all four events; `[]`
+disables them. Apply configuration changes by restarting MCode.
+
+Notifications identify the session and suppress duplicates. Completion waits for
+the session's queue to finish; failed turns and requests for input can notify
+independently. Known foreground focus suppresses notifications by default. When
+focus is unknown, delivery is best-effort; cmux manages its own surface focus.
+Automatic delivery uses the detected terminal's notification protocol or falls
+back to a bell. The existing Windows toast bridge is restricted to local Windows
+or WSL interop. Terminal settings and OS notification permissions still apply.
+
+VS Code normally displays a process name in its terminal tabs. To display MCode's
+session titles, use this VS Code setting:
+
+```json
+"terminal.integrated.tabs.title": "${sequence}"
+```
+
+A manually assigned tab title overrides automatic titles. VS Code's bell is a
+terminal-tab indicator, not a guarantee of a desktop notification. See the
+[VS Code terminal appearance documentation](https://code.visualstudio.com/docs/terminal/appearance#_tab-text).
+Inside tmux, OSC notifications require passthrough and support from the outer
+terminal; use `method: bel` for a bell fallback.
+
+The evidence column summarizes the historical TUI 0.3.11 restoration record from 2026-09-11. It does not claim fresh TUI 0.6.3 live-service acceptance. Use [current verification status](verification.md#current-source-verification-status) for checks run against the updated source and explicit NOT RUN boundaries.
 
 | Capability | Implementation | Evidence |
 | --- | --- | --- |
@@ -20,6 +95,45 @@ The evidence column summarizes the historical TUI 0.3.11 restoration record from
 | Model catalog | Online catalog and bundled snapshot fallback restored | Actual build boundary checks and offline startup; online catalog contents not accepted |
 | Files, shell, subagents, sessions, headless, ACP | Actual runtime retained | BYOK, file reads, session resume, ACP, sandbox, and status protocol tests |
 | Built-in skills, MCP, plugin tools | Original TUI assets and activation conditions retained | Asset build, plugin, and MCP tests; no claim that every skill has passed a real task |
+
+## Model request timeouts
+
+Each model request attempt has a first-response bound: if the provider accepts
+the request but sends no response within 300 seconds, the attempt is aborted
+and reported as a retryable timeout, so the normal model-request retry runs
+instead of waiting for the 20-minute overall request limit. 300 seconds matches
+the transport's previous effective wait for response headers. After the first
+response event, a stream that stays silent for 300 seconds is failed the same
+way; once visible output has started, the turn fails rather than retrying.
+Override the bounds in milliseconds with `MCODE_LLM_FIRST_EVENT_TIMEOUT_MS` and
+`MCODE_LLM_STREAM_IDLE_TIMEOUT_MS`; `0` disables a bound. Embedding hosts can
+also set `firstEventTimeoutMs` and `streamIdleTimeoutMs` per model. The timeout error names
+the setting that fired. The 20-minute overall request limit still applies.
+
+## Automatic context compaction trigger
+
+Automatic compaction starts before a model request whose context exceeds the
+built-in trigger. That trigger reserves the configured output limit (capped at a
+quarter of the window) and then takes 95% of the remainder, so it lands between
+about 70% and 95% of the context window depending on the model. Large tool
+results and the serialized request size can also start compaction on their own;
+tool-result reduction is configured separately under `toolResultCompaction`.
+
+To compact earlier, for example to keep requests smaller, set an upper bound in
+the data directory's `config.yaml`:
+
+```yaml
+contextManagement:
+  compactionTriggerAt: 0.8 # ratio of the context window, or e.g. 300000 tokens
+```
+
+A value in `(0, 1]` is a ratio of the current model's context window; an integer
+above 1 is an absolute token count. The effective trigger is the lower of this
+value and the built-in trigger, so the setting can start compaction earlier but
+never later, and has no lower bound: a value below what remains after compaction
+compacts before every request. Other values, such as `1.5`, are ignored with a
+warning in the runtime log. Automatic compaction cannot be disabled; `/compact`
+remains available at any time. Apply changes by restarting MCode.
 
 ## Local Bash execution
 
@@ -39,6 +153,33 @@ persistence succeeds. `task_output` reads use byte offsets; a successful read ca
 report a failed command. Stop failures and incomplete logs are reported separately.
 An optional `description` supplies the TUI summary while execution and permission
 checks continue to use the original command.
+
+## Stopping a conversation and its background work
+
+An explicit user stop (Esc in the TUI) also cancels background Bash commands and
+subagents owned by that conversation in the current process, including activated
+`task_append` continuations and work spawned by their child turns. Completion
+notices for those tasks no longer automatically wake the conversation. Their
+terminal results remain unread so the next turn can inspect them through the
+background-task reminder and `task_output`.
+
+Leaving a conversation with `/clear` or a session switch still stops its current
+turn and pauses its Goal and queued instructions, but leaves background work
+running. This pause also applies when unconsumed steering must fall back to the
+queue after a history-write failure. A stop rejected because it names an older
+turn does not cancel the current turn's background work.
+
+Only locally owned running tasks are canceled; tasks held by another runtime
+process are left alone. Child cleanup follows the task's owning child turn, so a
+later continuation in the same child session is preserved. Delivery suppression
+is held in process memory. If a turn does not release within the abort timeout,
+work created later during its shutdown is outside the stop boundary. A delivery
+already being admitted can also race with a stop.
+
+Offline regression tests cover cascade ownership, delivery suppression, late
+task creation, repeated stops, append completion/shutdown, and queue fallback.
+The host integration tests use a scripted runner and real background processes;
+they do not establish live-model or cross-platform acceptance.
 
 ## Skill directory links
 
@@ -74,7 +215,7 @@ Website deployment tools and routes follow the original tool set. Successful dep
 
 ## Release boundary
 
-Production client paths are restored without internal registries or test-service addresses as build dependencies. Real account behavior, quota, billing, model quality, media generation, and deployment require separate acceptance. Mocks, protocol fixtures, successful builds, and the source import do not replace that evidence. Public npm `latest` was 0.4.12 on 2026-09-18; that metadata observation does not validate the installed package or deploy a backend. See [verification records](verification.md) and the historical [release audit](release-audit.md) for recorded acceptance results.
+Production client paths are restored without internal registries or test-service addresses as build dependencies. Real account behavior, quota, billing, model quality, media generation, and deployment require separate acceptance. Mocks, protocol fixtures, successful builds, and the source import do not replace that evidence. Public npm `latest` was 0.6.9 on 2026-10-13; that metadata observation does not validate the installed package or deploy a backend. See [verification records](verification.md) and the historical [release audit](release-audit.md) for recorded acceptance results.
 
 ## Diagnostic upload privacy
 
@@ -88,8 +229,43 @@ Every collected diagnostic artifact, including prioritized session artifacts, is
 
 There is no raw-attachment upload option in this flow. Prompts, conversation text, tool arguments/results, command output, workspace excerpts, raw errors and unknown fields are excluded even if they contain no recognizable credential pattern. This intentionally reduces diagnostic detail: reproducing an exact response or inspecting an original stack is not possible from these uploads. Future raw attachments would require a separate, explicit review and consent surface describing their contents and scope.
 
-The regression tests use temporary synthetic files and intercepted HTTP only. They decrypt the final automatic-report request as a receiver would, and unzip the actual feedback PUT body after real session-report collection. They do not validate production ingestion of the new schemas, retention policies, live services, other telemetry paths or other platforms.
+The regression tests use temporary synthetic data and intercepted HTTP only. They decrypt the final automatic-report request as a receiver would, and unzip the actual feedback PUT body after real session-report collection. They do not validate production ingestion of the new schemas, retention policies, live services, other telemetry paths or other platforms.
 
+
+## Launch-scoped system prompt overrides
+
+The interactive TUI, `exec`, `exec review`, and `mcode acp` can replace or extend the main Agent identity prompt:
+
+```bash
+# Replace the identity section; runtime rules, project instructions, Environment, Memory, and Skills stay
+mcode --system-prompt-file ./identity.md
+
+# Append text after the identity section
+mcode exec --append-system-prompt "List the files you will change first." "Complete this task."
+```
+
+Use either `--system-prompt` or `--system-prompt-file`, and either `--append-system-prompt` or
+`--append-system-prompt-file`; replace and append can be combined. Each form is one slot, and the
+slot written closest to the subcommand wins: `mcode --system-prompt-file a.md exec --system-prompt "..."`
+uses the inline text and does not read `a.md`. The flags are also accepted before `exec`, `exec review`,
+or `acp`. Other subcommands, such as `login` or `init`, reject them instead of ignoring them.
+
+Files are read once at startup relative to the current directory; a missing, unreadable, or empty file
+fails the launch rather than running with an unpatched prompt. A restart after sign-in preserves the
+original flags, and the overrides are held in process memory only: they are never written to the
+Session or configuration. Task child Agents keep the packaged prompt, so an override affects the
+interactive surface it was launched for.
+
+
+## Ask/Plan answer requests
+
+When the model asks a question through the `ask_user` tool, that turn ends with a durable pending
+request instead of a final assistant message. The TUI now recognizes this state from the tool result
+and, when a fast reply arrived before the stream drained, from the pending request itself, so the turn
+settles as awaiting your answer. Previously the same turn fell through to a retryable
+"Runtime completed without a final assistant response" failure even though the question was already
+on screen. The settled duration and the `/retry` command follow this state rather than the previous
+failed-run path.
 
 ## Interactive startup model
 
@@ -136,6 +312,20 @@ and image layout changes also retain the existing reconstruction behavior. A
 reconstruction clears earlier shell scrollback and can reset the host's scroll
 position; ordinary updates keep native scrolling and selection behavior.
 
+During a run, regular mode lets a row scroll into native history only when later
+updates cannot change it. These rows include finished steps, earlier blocks of a
+streaming reply, and the welcome banner. The welcome banner omits live account
+and runtime status in a conversation; account notices that need action appear
+above the Composer. A running tool, a block that is still streaming (such as a
+growing table or list), and the last tool step stay on screen until they are
+final. If they do not fit, the screen shows their latest rows under a
+`↑ N more lines above · still updating` line, and the full rows enter history in
+order once final. Long turns extend their visible steps instead of re-folding or
+dropping earlier steps, so ordinary progress never needs reconstruction. To keep
+long sessions responsive, MCode stops retaining final rows that are far above
+the screen; they remain in the terminal's own scrollback. A later reconstruction,
+such as after a resize, redraws only the retained recent rows.
+
 Rewind and Fork history-loading hints disappear as soon as their lists are ready.
 Returning from a cancelled operation must not leave a stale loading message in the
 Composer. Rewind displays its completed result after a successful operation.
@@ -153,6 +343,12 @@ Press `Ctrl+/` to switch between the main and side views, or `/parent` to return
 to the main view. Press `Ctrl+C` on an empty Composer to discard the side
 conversation. Side conversations retain the main session's permission mode and
 remain hidden from `/sessions` and `/resume`.
+
+When a side-conversation model request fails and can be retried, run `/retry`
+in the side view to resend the side conversation's last message without
+returning to the main view.
+`/doctor` and `/feedback` also work in the side view, so a failed side response
+can be diagnosed or reported without leaving it. `/quit` stays unavailable there.
 
 Creation and activation failures record a bounded, redacted cause chain in the
 local `session.side.failed` diagnostic event. Feedback uploads still apply the

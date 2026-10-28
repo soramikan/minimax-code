@@ -7,7 +7,7 @@
 </p>
 
 <h1 align="center">MiniMax Code</h1>
-<p align="center">A terminal coding agent with MiniMax, your own models, and tools beyond code.</p>
+<p align="center">Turn a prompt into something that works. Build, test, and keep iterating from your terminal—with MiniMax or your own model.</p>
 <p align="center">
   <a href="#quick-start">Get started</a> ·
   <a href="docs/README.md">Documentation</a> ·
@@ -21,11 +21,13 @@
   <a href="LICENSE-STATUS.md"><img src="docs/assets/license.svg" alt="First-party default license: MIT"></a>
 </p>
 
-Understand a project, make changes, and run tests from your terminal. Use your MiniMax account or bring your own model, with search, plugins, and multimodal tools in the same workflow.
+Give a blinking pocket pet a focus timer. Then ask: “Make pause a long press, and celebrate when the timer ends.” Watch a request become something you can actually use.
 
-[![Real MiniMax Code TUI output: fixing clamp, inspecting the diff, and running tests](docs/assets/tui-demo.png)](docs/demo.md)
+[![Pocket Pet: from a blinking face to a working focus companion](docs/assets/pocket-pet-demo.png)](docs/demo.md)
 
-<p align="center"><a href="docs/demo.md">Watch the 20-second demo →</a> · Real terminal output, with pauses shortened</p>
+<p align="center"><a href="docs/demo.md">Watch the build story and browser demo →</a> · <a href="examples/pocket-pet">Build it yourself →</a></p>
+
+**No hardware required.** The example runs locally in your browser, with no frontend dependencies. Asking the CLI to edit code requires a MiniMax account with available credits or your own compatible model API; model calls may incur charges. The finished example runs without a model account.
 
 ## Quick start
 
@@ -80,7 +82,7 @@ mcode login --region global
 
 Complete sign-in in your browser, then open `mcode` and use `/status` to check your account and `/provider` to choose a model. Run `mcode logout` to sign out.
 
-Token Plan requires an account with available credits. Builds from this repository and the published npm CLI `@minimax-ai/code@0.4.12` default to `~/.minimax` for user data (or `~/.minimax-<profile>` when a profile is selected). `MINIMAX_DATA_DIR` or `MAVIS_DATA_DIR` can override the data directory. The installer's `~/.minimax-code` installation directory is separate from this choice. See [Accounts and data](docs/installation.md#accounts-and-data) before locating or removing configuration and sessions.
+Token Plan requires an account with available credits. Builds from this repository and the published npm CLI `@minimax-ai/code@0.6.9` default to `~/.minimax` for user data (or `~/.minimax-<profile>` when a profile is selected). `MINIMAX_DATA_DIR` or `MAVIS_DATA_DIR` can override the data directory. The installer's `~/.minimax-code` installation directory is separate from this choice. See [Accounts and data](docs/installation.md#accounts-and-data) before locating or removing configuration and sessions.
 
 <details>
 <summary>Use your own API key (BYOK)</summary>
@@ -104,7 +106,26 @@ Providers added this way are stored under `custom_provider` in the active profil
 
 OpenAI Codex OAuth can be enabled experimentally with `beta.codexOAuth: true` in `config.yaml`; it signs in with a ChatGPT account instead of an API key. See [OpenAI Codex OAuth](docs/examples.md#openai-codex-oauth-experimental).
 
-### 3. Run your first task
+### 3. Build the pocket pet
+
+Clone this repository and copy the starter into a separate directory:
+
+```bash
+git clone https://github.com/MiniMax-AI/minimax-code.git
+cd minimax-code
+node examples/pocket-pet/setup.mjs ../my-pocket-pet
+cd ../my-pocket-pet
+node serve.mjs
+```
+
+Open `http://127.0.0.1:4173`. In a second terminal, open `mcode` in `my-pocket-pet` and paste [the first prompt](examples/pocket-pet/README.md#first-request), then [the follow-up](examples/pocket-pet/README.md#change-the-requirement). Refresh the browser after each change.
+
+Prefer to try the result first? From the repository root, run `node examples/pocket-pet/serve.mjs finished` and open the same URL. Add `?demo=1` for the visibly labeled 10-second mode.
+
+[Full walkthrough and requirements](examples/pocket-pet) · [Small code-repair example](examples/clamp) · [Models, search, and tools](docs/examples.md)
+
+
+### Work in your own project
 
 Open the project you want to work on:
 
@@ -126,6 +147,28 @@ Use `mcode init .` to generate or update project guidance in `AGENTS.md`. Descri
 | Interactive TUI | `mcode [prompt]` | Explore code, continue a conversation, and review changes or permissions. |
 | Headless | `mcode exec [prompt]` | Shell scripts, CI, batch work, and evaluations. |
 | ACP | `mcode acp` | Editors and clients supporting Agent Client Protocol. |
+
+### Lightweight conversations
+
+For simple conversation or general knowledge questions, start a new Session with
+`--mode lightweight`:
+
+```bash
+mcode --mode lightweight "Explain how DNS caching works."
+mcode exec --mode lightweight "Summarize the CAP theorem."
+```
+
+Lightweight mode sends a small conversational system prompt and no tool schemas. It omits workspace
+instructions, Skills, memory blocks, MCP schemas, and the full environment block from provider
+context, so it cannot inspect or change local files. Start a new standard Session for coding or tool use with
+`mcode --mode standard` or `mcode exec --mode standard`; omitting `--mode` is identical to standard
+mode.
+
+The mode is fixed when a root Session is created. `--mode lightweight` therefore cannot be combined
+with `--session` or `--continue`. Child/sub-agent Sessions do not inherit it, `/compact` continues to
+use the standard compaction context, and ACP and desktop Sessions remain standard. Reopening a
+lightweight Session keeps its mode and shows `Lightweight` in the TUI status line; opening a standard
+Session from a lightweight launch remains standard and shows no indicator.
 
 ### Continue your work
 
@@ -213,13 +256,6 @@ A profile uses `~/.minimax-<profile>`; `MINIMAX_DATA_DIR` or `MAVIS_DATA_DIR` ca
 
 Account features, updates, feedback, and diagnostics are also included. Managed tools require network access and the relevant authorization. See [capabilities and service boundaries](docs/tui-capabilities.md) for details.
 
-## Try it
-
-Start the TUI in a copy of the example project and enter:
-
-> Read clamp.mjs and clamp.test.mjs. Run node --test to reproduce the failure, fix clamp without changing the tests, then run the tests again.
-
-The [small, reproducible project](examples/clamp) is the same task used in the demo above. [More examples](docs/examples.md) cover switching models, calling real search, and using your own image inputs.
 
 ## Build from source
 
@@ -241,7 +277,7 @@ From the source directory, use `pnpm mcode` in place of `mcode` in the examples 
 node /absolute/path/to/minimax-code/dist/cli.js
 ```
 
-This repository targets the **0.4.12 source preview**. Installing the published package and building this checkout are separate paths. Matching versions do not prove identical build provenance; see the [version and evidence baseline](docs/open-source-status.md#version-and-evidence-baseline).
+This repository targets the **0.6.3 source preview**. Installing the published package and building this checkout are separate paths. Matching versions do not prove identical build provenance; see the [version and evidence baseline](docs/open-source-status.md#version-and-evidence-baseline).
 
 ## Documentation and contributing
 
@@ -262,6 +298,18 @@ For now, code and documentation pull requests are accepted only from repository 
 [Download for macOS or Windows](https://agent.minimax.io/download) · [Report a problem or ask a question](https://github.com/MiniMax-AI/minimax-code/issues/new/choose)
 
 This repository also hosts issue reporting for the MiniMax Code desktop app. The published source covers the terminal TUI, headless CLI, and ACP; it does not include the desktop application's source. Select the affected product when filing an issue. For a desktop bug, include the app version, operating system, and a log upload ID if available from **Settings → General → Upload logs**. For a CLI bug, include `mcode --version`, your interface, and a minimal reproduction. Remove credentials and private project content from reports.
+
+## Feedback and contact
+
+| Channel | Use it for |
+| --- | --- |
+| [GitHub Issues](https://github.com/MiniMax-AI/minimax-code/issues/new/choose) | Public bug reports, feature requests, and questions about the CLI or desktop app. |
+| [MiniMaxCode@minimax.io](mailto:MiniMaxCode@minimax.io) | General feedback and support inquiries. |
+| [security.mcode@minimax.io](mailto:security.mcode@minimax.io) | Private vulnerability reports. Send reproduction details and redacted evidence here; see [Security](SECURITY.md). |
+| [Discord](https://minimax.io/discord) | Community discussion and feedback. |
+| [Feishu feedback group QR code](https://cdn.hailuoai.com/hailuo-video-web/public_assets/minimax_code_feishu_group_url.png) | Chinese-language community feedback. Scan with Feishu, or find the QR code in the Chinese desktop app under the user menu → **Contact us → Feishu**. |
+
+Follow [MiniMax on X](https://x.com/MiniMaxAgent) for updates. Keep vulnerability details, credentials, and private project content out of public issues and community chats.
 
 ## License
 

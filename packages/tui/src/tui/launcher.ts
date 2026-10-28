@@ -65,8 +65,13 @@ import {
   writeTuiThemeSetting,
 } from '../host/tui-settings.js';
 import { schedulePendingMcodePrefixUpdate } from '../update/prefix-update.js';
+import {
+  systemPromptRestartArguments,
+  type SystemPromptOverrides,
+} from '../cli/system-prompt-options.js';
 import { MCODE_TUI_RESULT_PATH_ENV } from './automation/result-writer.js';
 import { startTuiStartupStatus, type TuiStartupStatus } from './startup-status.js';
+import type { McodeContextMode } from '@mavis/protocol/local';
 
 const MINIMAX_CODE_EXIT_SLOGAN = 'Intelligence with everyone, bye~';
 export interface LaunchTuiOptions {
@@ -85,7 +90,9 @@ export interface LaunchTuiOptions {
   theme?: string;
   externalEditorCommand?: string;
   resumeDraftAfterLogin?: boolean;
+  contextMode?: McodeContextMode;
   lane?: string;
+  systemPromptOverrides?: SystemPromptOverrides;
 }
 
 type LaunchApp = Pick<TuiApp, 'ready' | 'firstFrame' | 'start' | 'stop' | 'stopped' | 'submit'> & {
@@ -107,7 +114,9 @@ interface RuntimeLifecycleModule {
       version: string;
       surface: 'tui';
       observability: TuiObservability;
+      contextMode?: McodeContextMode;
       lane?: string;
+      systemPromptOverrides?: SystemPromptOverrides;
     },
     dependencies?: Pick<CreateTuiRuntimeDependencies, 'sharedAuthCore'>,
   ): Promise<CreatedTuiRuntime>;
@@ -348,7 +357,11 @@ export async function launchTui(
           version: options.version,
           surface: 'tui',
           observability,
+          ...(options.contextMode ? { contextMode: options.contextMode } : {}),
           ...(bedrockLane ? { lane: bedrockLane } : {}),
+          ...(options.systemPromptOverrides
+            ? { systemPromptOverrides: options.systemPromptOverrides }
+            : {}),
         },
         { sharedAuthCore },
       );
@@ -387,6 +400,10 @@ export async function launchTui(
         dataDir,
         version: options.version,
         workspaceDir,
+        terminalCapabilities,
+        ...(presentationConfig.terminalTitle !== undefined
+          ? { terminalTitle: presentationConfig.terminalTitle }
+          : {}),
         ...(presentationConfig.statusLineItems
           ? { statusLineItems: presentationConfig.statusLineItems }
           : {}),
@@ -399,6 +416,9 @@ export async function launchTui(
         ...(presentationConfig.notifications
           ? { notifications: presentationConfig.notifications }
           : {}),
+        ...(presentationConfig.programStatus === undefined
+          ? {}
+          : { programStatus: presentationConfig.programStatus }),
         ...(process.env[MCODE_TUI_RESULT_PATH_ENV]
           ? { automationResultPath: process.env[MCODE_TUI_RESULT_PATH_ENV] }
           : {}),
@@ -406,6 +426,7 @@ export async function launchTui(
         homeDir: homeDirectory,
         terminal,
         tuiMode,
+        clearScrollbackOnStart: Boolean(options.sessionId?.trim() || options.continueLatestSession),
         persistTuiMode: (mode) => (dependencies.writeTuiMode ?? writeTuiModeSetting)(dataDir, mode),
         ...(theme ? { theme } : {}),
         persistTheme: (value) =>
@@ -861,13 +882,16 @@ export function resolveRestartArguments(
   const startupEnvironment = resolveTuiStartupEnvironmentOption(userArgs, true);
   const environmentArgs = startupEnvironment ? ['--env', startupEnvironment] : [];
   const resumeArgs = sessionId ? ['--session', sessionId] : [];
+  const systemPromptArgs = systemPromptRestartArguments(userArgs);
   const promptArgs = initialPrompt ? [initialPrompt] : [];
-  if (!nodeExecutable) return [...environmentArgs, ...resumeArgs, ...promptArgs];
+  if (!nodeExecutable) {
+    return [...environmentArgs, ...systemPromptArgs, ...resumeArgs, ...promptArgs];
+  }
   const entryFile = argv[1];
   if (!entryFile || !isExistingFile(entryFile)) {
     throw new Error('Unable to restart MCode because its Node.js entry file is unavailable.');
   }
-  return [entryFile, ...environmentArgs, ...resumeArgs, ...promptArgs];
+  return [entryFile, ...environmentArgs, ...systemPromptArgs, ...resumeArgs, ...promptArgs];
 }
 
 function isNodeExecutable(executable: string): boolean {

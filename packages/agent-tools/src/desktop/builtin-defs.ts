@@ -118,7 +118,7 @@ export const LocalBashToolDef = {
     '# Git',
     '- Interactive flags (`-i`, e.g. `git rebase -i`, `git add -i`) are not supported in this environment.',
     '- Use the `gh` CLI for GitHub operations (PRs, issues, API).',
-    '- Commit or push only when the user asks. If on the default branch, branch first.',
+    '- Commit or push only when the user asks.',
   ].join('\n'),
   schema: Type.Object({
     command: Type.String({
@@ -129,12 +129,13 @@ export const LocalBashToolDef = {
       Type.Number({
         exclusiveMinimum: 0,
         description:
-          'Total command timeout in seconds. Foreground-only: default 120s, max 300s. Foreground with automatic backgrounding: default/max 600s, including foreground time. Explicit background: uses the specified timeout, or a 30-minute limit if omitted.',
+          'Total command timeout in seconds. Foreground-only: default 120s, max 300s. Foreground with automatic backgrounding: default/max 3600s total, including foreground time. Explicit background: uses the specified timeout, or a 1-hour runtime limit if omitted. Backgrounding does not reset the timeout.',
       }),
     ),
     run_in_background: Type.Optional(
       Type.Boolean({
-        description: 'Set to true to run this command in the background.',
+        description:
+          'Start in the background and return a task id immediately. Foreground commands may also return a task id after 60s without restarting the process.',
       }),
     ),
   }),

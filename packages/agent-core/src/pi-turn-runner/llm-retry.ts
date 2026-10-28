@@ -7,6 +7,7 @@ import type {
   SimpleStreamOptions,
 } from '@earendil-works/pi-ai';
 import {
+  isLLMDeterministicRequestRejection,
   normalizeLLMError,
   toLLMMetricErrorKind,
   toLLMProtocolClassification,
@@ -578,8 +579,18 @@ function failureResult(input: {
     ...(input.response ? { statusCode: input.response.status } : {}),
     explicitAbort: input.final?.stopReason === 'aborted',
   });
+  // BYOK retries every pre-output failure because custom gateways report errors
+  // inconsistently, but some failures are deterministic: a model safety refusal,
+  // or a request the provider rejects as invalid (too many images, or an HTTP
+  // 400 `invalid_request_error`). Retrying those only re-sends the same request,
+  // repeats (and may re-bill) the rejection and delays the actionable error by
+  // the whole backoff window. The deterministic check excludes anything that
+  // also looks transient (timeout, network, 408/429/5xx).
   const decision =
-    input.retryAllErrors && !normalized.facts.explicitAbort
+    input.retryAllErrors &&
+    !normalized.facts.explicitAbort &&
+    !normalized.facts.signals.has('refusal') &&
+    !isLLMDeterministicRequestRejection(normalized)
       ? { retryable: true, reason: 'network' as const }
       : toLLMRetryDecision(normalized);
   if (!decision.retryable) {

@@ -4,7 +4,7 @@
 // tree path. Custom providers never consult the Pi catalog by name; missing
 // limits use the dedicated BYOK fallbacks (not the legacy 2048 default).
 import type { Api, Transport } from '@earendil-works/pi-ai';
-import { MINIMAX_API_MODEL_CATALOG } from '@mavis/config';
+import { minimaxApiModels } from '@mavis/config';
 
 import type {
   LocalCustomProvidersConfig,
@@ -78,12 +78,9 @@ export function planMinimaxApiResolution(input: {
   if (!apiKey) {
     throw new Error('LocalModelResolver: minimax_api apiKey is not configured.');
   }
-  const catalogModel = MINIMAX_API_MODEL_CATALOG[input.modelId];
-  const contextOverride = cfg.modelContextLimits?.[input.modelId];
-  const contextLimit =
-    contextOverride !== undefined && catalogModel?.contextWindowOptions?.includes(contextOverride)
-      ? contextOverride
-      : catalogModel?.limit?.context;
+  const catalogModel = minimaxApiModels({ provider: input.providerConfig, minimax_api: cfg })[
+    input.modelId
+  ];
   return {
     provider: 'minimax_api',
     api: 'anthropic-messages',
@@ -93,7 +90,7 @@ export function planMinimaxApiResolution(input: {
       cfg.baseURL?.trim() || MINIMAX_API_DEFAULT_BASE_URL,
     ),
     contextWindow:
-      contextLimit ??
+      catalogModel?.limit?.context ??
       (input.catalog.fromCatalog
         ? input.catalog.contextWindow
         : BYOK_FALLBACK_MODEL_LIMITS.contextWindow),

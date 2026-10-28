@@ -1,9 +1,11 @@
+import { formatTokensPerSecond } from '../rendering/output-rate.js';
 import { Markdown, Text } from '../engine/public.js';
 import { projectAssistantContentForTerminal } from '../../application/assistant-content.js';
 import { formatTuiDuration } from '../rendering/duration.js';
 import type { Component } from '../rendering/component.js';
 import { stripAnsi, truncateToWidth, visibleWidth } from '../rendering/text.js';
 import { sanitizeTerminalText } from '../rendering/terminal-text.js';
+import { wrapLiteralUserText } from './presentation/literal-text.js';
 import type { TranscriptAttachment, TranscriptCell } from './model.js';
 import { resolveTranscriptCellDisplayMode } from './model.js';
 import {
@@ -45,6 +47,11 @@ const OSC133_ZONE_FINAL = '\x1b]133;C\x07';
 const TOOL_ROW_CONNECTOR_WIDTH = 2;
 /** Below this the command is too clipped to identify, so keep the row uniform instead. */
 const MIN_SHELL_COMMAND_WIDTH = 12;
+/**
+ * Append-only rendering keeps at most this many final rows before trimming rows
+ * that already sit in native scrollback, so frame cost stays bounded in long sessions.
+ */
+const APPEND_ONLY_RETAINED_ROWS = { high: 3_000, low: 1_500 } as const;
 
 export class TranscriptView implements Component {
   private readonly unitCache = new Map<
@@ -65,6 +72,8 @@ export class TranscriptView implements Component {
         source?: TranscriptProjectionSource;
         sourceRevision?: number;
         presentationRevision: number;
+        appendOnly: boolean;
+        stableRows: number;
       }
     | undefined;
   private performanceSnapshot = {
@@ -86,6 +95,12 @@ export class TranscriptView implements Component {
 
   private readonly displayModes: TranscriptDisplayModeResolver;
   private readonly workspaceDir: string;
+  private readonly appendOnly: () => boolean;
+  private readonly retainedRows: { readonly high: number; readonly low: number };
+  private stableRows = 0;
+  /** First cell kept after trimming final rows in append-only mode. */
+  private trimmedBeforeCellId: string | undefined;
+  private discardedRows = 0;
 
   constructor(
     private readonly cells:
@@ -98,8 +113,17 @@ export class TranscriptView implements Component {
       maxProjectedCells?: number;
       displayModes?: TranscriptDisplayModeResolver;
       workspaceDir?: string;
+      /**
+       * Regular terminal mode writes rendered rows into native scrollback, which
+       * cannot be edited. Its projection must only grow at the end.
+       */
+      appendOnly?: () => boolean;
+      /** Final-row bounds for trimming append-only output; defaults suit a terminal session. */
+      retainedRows?: { readonly high: number; readonly low: number };
     } = {},
   ) {
+    this.appendOnly = options.appendOnly ?? (() => false);
+    this.retainedRows = options.retainedRows ?? APPEND_ONLY_RETAINED_ROWS;
     this.displayModes = options.displayModes ?? new TranscriptPresentationController();
     this.workspaceDir = options.workspaceDir ?? process.cwd();
     this.projectionWindow = new TranscriptProjectionWindow(
@@ -117,6 +141,8 @@ export class TranscriptView implements Component {
   }
 
   dispose(): void {
+    this.trimmedBeforeCellId = undefined;
+    this.discardedRows = 0;
     this.unitCache.clear();
     this.markdownComponents.clear();
     this.markdownStreaming.clear();
@@ -133,34 +159,49 @@ export class TranscriptView implements Component {
     const sourceRevision = source?.revision;
     if (this.frameCache && this.frameCache.source !== source) this.invalidate();
     const presentationRevision = this.displayModes.revision;
+    const appendOnly = this.appendOnly();
     if (
       source &&
       sourceRevision !== undefined &&
       this.frameCache?.source === source &&
       this.frameCache.sourceRevision === sourceRevision &&
       this.frameCache.presentationRevision === presentationRevision &&
+      this.frameCache.appendOnly === appendOnly &&
       this.frameCache.width === normalizedWidth
     ) {
+      this.stableRows = this.frameCache.stableRows;
       return this.frameCache.lines;
     }
 
-    const projection = this.projectionWindow.project(sourceCells);
-    const units = createRenderUnits(projection.cells);
+    const projection = this.projectionWindow.project(sourceCells, { appendOnly });
+    let projectedCells = projection.cells;
+    if (!appendOnly) this.trimmedBeforeCellId = undefined;
+    if (this.trimmedBeforeCellId) {
+      const firstKept = projectedCells.findIndex((cell) => cell.id === this.trimmedBeforeCellId);
+      // The source was replaced (new or switched Session); start from its projection.
+      if (firstKept < 0) this.trimmedBeforeCellId = undefined;
+      else projectedCells = projectedCells.slice(firstKept);
+    }
+    const trimmed = this.trimmedBeforeCellId !== undefined;
+    const units = createRenderUnits(projectedCells);
     const unitSignatures = units.map((unit) => renderUnitSignature(unit, source));
     const frameSignature = `${presentationRevision}\u001C${
       projection.hiddenTurns
+    }\u001C${appendOnly ? 'append' : 'window'}\u001C${
+      this.trimmedBeforeCellId ?? ''
     }\u001C${unitSignatures.join('\u001F')}`;
     if (
       this.frameCache?.width === normalizedWidth &&
       this.frameCache.signature === frameSignature
     ) {
+      this.stableRows = this.frameCache.stableRows;
       return this.frameCache.lines;
     }
 
     this.resetFrameCacheMetrics();
     const activeUnitKeys = new Set<string>();
-    const lines: string[] =
-      projection.hiddenTurns > 0
+    let lines: string[] =
+      projection.hiddenTurns > 0 && !trimmed
         ? [
             chalk.hex(colors.muted)(
               `↑ ${projection.hiddenTurns} earlier turns omitted from live projection`,
@@ -168,18 +209,56 @@ export class TranscriptView implements Component {
             ' ',
           ]
         : [];
+    // Rows before the first unit that can still change are final. Everything at
+    // or after it stays live: its text may change, so it must not enter history.
+    let stableRows = lines.length;
+    let frontierOpen = true;
+    let blockStart = lines.length;
+    const unitRowStarts: number[] = [];
     units.forEach((unit, index) => {
       const next = units[index + 1];
       const key = renderUnitKey(unit);
       activeUnitKeys.add(key);
       const rendered = this.renderUnit(unit, next, normalizedWidth, unitSignatures[index] ?? '');
       const connectedToNext = isConnectedRenderUnit(unit, next);
+      const rowsStart = lines.length;
+      unitRowStarts.push(rowsStart);
       lines.push(...rendered);
+      if (frontierOpen) {
+        const finalRows = this.finalRowCount(unit, next, rendered.length);
+        if (finalRows >= rendered.length) {
+          stableRows = lines.length;
+        } else {
+          // A separator belongs to the block after it; keep it live with a live block.
+          stableRows = finalRows > 0 ? rowsStart + finalRows : blockStart;
+          frontierOpen = false;
+        }
+      }
+      blockStart = lines.length;
       if (next && rendered.length > 0 && !connectedToNext && !isPendingSteerUnit(next)) {
         lines.push(' ');
       }
     });
+    if (appendOnly && stableRows > this.retainedRows.high) {
+      // Drop whole leading units that are final and far above the screen. Retained
+      // units render independently of earlier ones, so the result is an exact suffix.
+      const target = Math.min(stableRows, lines.length - this.retainedRows.low);
+      let cutUnit = -1;
+      for (let index = 1; index < units.length; index += 1) {
+        if ((unitRowStarts[index] ?? Infinity) > target) break;
+        cutUnit = index;
+      }
+      const cut = cutUnit > 0 ? units[cutUnit] : undefined;
+      const cutRow = unitRowStarts[cutUnit] ?? 0;
+      if (cut && cutRow > 0) {
+        this.trimmedBeforeCellId = cut.kind === 'cell' ? cut.cell.id : cut.cells[0]?.id;
+        this.discardedRows += cutRow;
+        lines = lines.slice(cutRow);
+        stableRows -= cutRow;
+      }
+    }
     this.pruneUnitCaches(activeUnitKeys);
+    this.stableRows = stableRows;
     this.frameCache = {
       signature: frameSignature,
       width: normalizedWidth,
@@ -187,6 +266,8 @@ export class TranscriptView implements Component {
       source,
       sourceRevision,
       presentationRevision,
+      appendOnly,
+      stableRows,
     };
     this.performanceSnapshot = {
       sourceUnits: sourceCells.length,
@@ -202,6 +283,52 @@ export class TranscriptView implements Component {
       unitCacheMisses: this.frameUnitCacheMisses,
     };
     return lines;
+  }
+
+  /**
+   * Leading rows of the latest render that later updates cannot change. Rows
+   * after this boundary belong to a step that is still running or streaming, or
+   * to the last execution step whose connector depends on what follows.
+   */
+  getStableRowCount(): number {
+    return this.stableRows;
+  }
+
+  /** Whether append-only output no longer starts at the projection's first cell. */
+  isTrimmed(): boolean {
+    return this.trimmedBeforeCellId !== undefined;
+  }
+
+  /** Leading rows dropped from append-only output since the previous call. */
+  takeDiscardedRows(): number {
+    const rows = this.discardedRows;
+    this.discardedRows = 0;
+    return rows;
+  }
+
+  private finalRowCount(
+    unit: TranscriptRenderUnit,
+    next: TranscriptRenderUnit | undefined,
+    renderedRows: number,
+  ): number {
+    if (isPendingSteerUnit(unit)) return 0;
+    const cells = unit.kind === 'cell' ? [unit.cell] : unit.cells;
+    // A submitted prompt stays pending for the whole turn, but its rows do not
+    // depend on that status.
+    if (cells.some((cell) => cell.kind !== 'user' && isMutableCell(cell))) {
+      if (
+        unit.kind === 'cell' &&
+        (unit.cell.kind === 'assistant' || unit.cell.kind === 'assistant-preamble')
+      ) {
+        // Committed Markdown blocks never re-render while text is appended.
+        const markdown = this.markdownComponents.get(renderUnitKey(unit));
+        return Math.min(renderedRows, markdown?.getStableLineCount() ?? 0);
+      }
+      return 0;
+    }
+    // The last execution step's connector and rail change when the next step arrives.
+    if (!next && cells.some(isExecutionCell)) return 0;
+    return renderedRows;
   }
 
   getPerformanceSnapshot(): {
@@ -578,7 +705,7 @@ function renderCell(
   if (cell.kind === 'turn-duration') {
     const label = cell.status === 'cancelled' ? 'Interrupted after' : 'Completed in';
     const outputRate = isPositiveFinite(cell.outputTokensPerSecond)
-      ? ` · ⚡ ${cell.outputTokensPerSecondEstimated === true ? '~' : ''}${cell.outputTokensPerSecond.toFixed(1)} tok/s`
+      ? ` · ⚡ ${cell.outputTokensPerSecondEstimated === true ? '~' : ''}${formatTokensPerSecond(cell.outputTokensPerSecond)} tok/s`
       : '';
     const summary = chalk.hex(colors.muted)(
       `  └ ${label} ${formatTuiDuration((cell.durationMs ?? 0) / 1_000)}${outputRate}`,
@@ -655,7 +782,7 @@ function renderCell(
             toolSummary,
             width,
             visibleWidth(`${marker} ${title}`),
-            !backgroundBash,
+            backgroundBash ? 'background' : (evidence.summaryKind ?? 'command'),
           )}`
         : chalk.hex(colors.muted)(
             definition?.summaryStyle === 'dot' ? ` · ${toolSummary}` : ` (${toolSummary})`,
@@ -725,9 +852,9 @@ function renderCell(
   }
 
   if (cell.kind === 'warning') {
-    return [
-      ...new Text(chalk.hex(colors.warning)(`! Warning  ${cell.content}`), 2, 0).render(width),
-    ];
+    const title = sanitizeTerminalText(cell.title ?? 'Warning');
+    const content = sanitizeTerminalText(cell.content);
+    return [...new Text(chalk.hex(colors.warning)(`! ${title}  ${content}`), 2, 0).render(width)];
   }
 
   return [...new Text(cell.content, 2, 0).render(width)];
@@ -791,14 +918,16 @@ function sanitizeDelegationLabel(value: string | undefined, fallback: string): s
   return sanitized || fallback;
 }
 
+/**
+ * Render the user's own prompt as literal text inside the user band.
+ * See `wrapLiteralUserText` for why prompts never go through Markdown.
+ */
 function renderUserIntent(content: string, width: number): string[] {
   const normalizedWidth = Math.max(0, Math.floor(width));
   if (normalizedWidth === 0) return [];
   const verticalPadding = renderUserBandLine('', normalizedWidth);
   const bodyWidth = Math.max(1, normalizedWidth - 4);
-  const body = new Markdown(content, 0, 0, markdownTheme, {
-    color: (text) => chalk.hex(colors.text)(text),
-  }).render(bodyWidth);
+  const body = wrapLiteralUserText(content, bodyWidth);
   if (body.length === 0) {
     return [
       verticalPadding,
@@ -843,12 +972,9 @@ function renderPendingSteerMessage(cell: TranscriptCell, width: number): string[
   const heading = `${railIndent}${marker} ${label}`;
   const headingWidth = visibleWidth(heading);
   const contentWidth = Math.max(1, normalizedWidth - headingWidth - 3);
+  // Steer text is user input, so it stays literal like the main prompt row.
   const body = cell.content.trim()
-    ? new Markdown(cell.content, 0, 0, markdownTheme, {
-        color: (text) => chalk.hex(colors.text)(text),
-      })
-        .render(contentWidth)
-        .map(trimTerminalLineEnd)
+    ? wrapLiteralUserText(cell.content, contentWidth).map(trimTerminalLineEnd)
     : [];
   const attachments = (cell.attachments ?? []).map((attachment) => {
     const kind = transcriptAttachmentKind(attachment);
@@ -966,16 +1092,15 @@ function styleShellSummary(
   summary: string,
   width: number,
   usedWidth: number,
-  highlightCommand: boolean,
+  kind: 'description' | 'command' | 'background',
 ): string {
   const fitted = fitShellSummary(summary, width, usedWidth);
-  if (!highlightCommand) return chalk.hex(colors.muted)(fitted);
+  if (kind === 'background') return chalk.hex(colors.muted)(fitted);
+  const styleSubject = kind === 'command' ? highlightTuiShellCommand : chalk.hex(colors.text);
 
   const index = shellOutputSummaryIndex(fitted);
-  if (index <= 0) return highlightTuiShellCommand(fitted);
-  return `${highlightTuiShellCommand(fitted.slice(0, index))}${chalk.hex(colors.muted)(
-    fitted.slice(index),
-  )}`;
+  if (index <= 0) return styleSubject(fitted);
+  return `${styleSubject(fitted.slice(0, index))}${chalk.hex(colors.muted)(fitted.slice(index))}`;
 }
 
 function shellOutputSummaryIndex(summary: string): number {

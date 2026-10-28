@@ -7,7 +7,7 @@
 </p>
 
 <h1 align="center">MiniMax Code</h1>
-<p align="center">A terminal coding agent with MiniMax, your own models, and tools beyond code.</p>
+<p align="center">把一句话，做成能运行的东西。用 MiniMax 或自己的模型，在终端里构建、验证、继续改进。</p>
 <p align="center">
   <a href="#快速开始">Get started</a> ·
   <a href="docs/README.md">Documentation</a> ·
@@ -21,11 +21,13 @@
   <a href="LICENSE-STATUS.md"><img src="docs/assets/license.svg" alt="First-party default license: MIT"></a>
 </p>
 
-在终端里读懂项目、修改代码并运行测试。使用 MiniMax 账号或自己的模型，把搜索、插件和多模态工具接入同一个工作流。
+给一个会眨眼的小宠物加上番茄钟，再追问一句：“长按才能暂停，结束时跳舞。”看代码变成可以亲手操作的结果。
 
-[![MiniMax Code 真实 TUI：修复 clamp、查看代码 diff 并运行测试](docs/assets/tui-demo.png)](docs/demo.md)
+[![Pocket Pet：从会眨眼到会陪你专注](docs/assets/pocket-pet-demo.png)](docs/demo.md)
 
-<p align="center"><a href="docs/demo.md">观看 20 秒真实演示 →</a> · 真实终端输出回放，已压缩等待时间</p>
+<p align="center"><a href="docs/demo.md">看真实修改与浏览器演示 →</a> · <a href="examples/pocket-pet">自己做一次 →</a></p>
+
+**无需硬件。** 示例在本地浏览器运行，不需要前端依赖。让 CLI 修改代码需要 MiniMax 账号及可用额度，或你自己的兼容模型 API；模型调用可能产生费用。完成版可直接运行，无需模型账号。
 
 ## 快速开始
 
@@ -80,7 +82,7 @@ mcode login --region global
 
 在浏览器中完成登录，再启动 `mcode`，通过 `/status` 检查账号、通过 `/provider` 选择模型。退出登录使用 `mcode logout`。
 
-Token Plan 需要账号与可用额度。从本仓库构建的版本与已发布的 npm CLI `@minimax-ai/code@0.4.12` 均默认将用户数据保存在 `~/.minimax`（选择 profile 时为 `~/.minimax-<profile>`）。`MINIMAX_DATA_DIR` 或 `MAVIS_DATA_DIR` 可以覆盖数据目录。安装脚本使用的 `~/.minimax-code` 安装目录与数据目录的选择是两回事。查找或删除配置和会话前，请参阅[账号与数据](docs/installation.md#accounts-and-data)。
+Token Plan 需要账号与可用额度。从本仓库构建的版本与已发布的 npm CLI `@minimax-ai/code@0.6.9` 均默认将用户数据保存在 `~/.minimax`（选择 profile 时为 `~/.minimax-<profile>`）。`MINIMAX_DATA_DIR` 或 `MAVIS_DATA_DIR` 可以覆盖数据目录。安装脚本使用的 `~/.minimax-code` 安装目录与数据目录的选择是两回事。查找或删除配置和会话前，请参阅[账号与数据](docs/installation.md#accounts-and-data)。
 
 <details>
 <summary>使用自己的 API Key（BYOK）</summary>
@@ -104,7 +106,26 @@ mcode
 
 OpenAI Codex OAuth 为实验性功能，可在 `config.yaml` 中设置 `beta.codexOAuth: true` 启用；它使用 ChatGPT 账号登录，而非 API Key。详见 [OpenAI Codex OAuth](docs/examples.md#openai-codex-oauth-experimental)。
 
-### 3. 完成第一个任务
+### 3. 做一个自己的桌面宠物
+
+克隆仓库，把起始工程复制到独立目录：
+
+```bash
+git clone https://github.com/MiniMax-AI/minimax-code.git
+cd minimax-code
+node examples/pocket-pet/setup.mjs ../my-pocket-pet
+cd ../my-pocket-pet
+node serve.mjs
+```
+
+打开 `http://127.0.0.1:4173`。另开一个终端，在 `my-pocket-pet` 目录运行 `mcode`，依次粘贴[第一条提示词](examples/pocket-pet/README.md#first-request)和[追加需求](examples/pocket-pet/README.md#change-the-requirement)，每次修改后刷新浏览器。
+
+想先体验成品？在仓库根目录运行 `node examples/pocket-pet/serve.mjs finished`，打开同一地址。加上 `?demo=1` 可体验有明确标识的 10 秒演示模式。
+
+[完整教程与使用条件](examples/pocket-pet) · [小型代码修复示例](examples/clamp) · [模型、搜索与工具](docs/examples.md)
+
+
+### 在自己的项目中使用
 
 进入要处理的项目目录：
 
@@ -126,6 +147,25 @@ mcode "Find a failing test, fix the implementation, and run the relevant tests."
 | 交互式 TUI | `mcode [prompt]` | 探索代码、持续对话、审阅修改与权限确认。 |
 | Headless | `mcode exec [prompt]` | Shell、CI、批处理与评测。 |
 | ACP | `mcode acp` | 支持 Agent Client Protocol 的编辑器与客户端。 |
+
+### 轻量对话
+
+对于简单对话或通用知识问答，可用 `--mode lightweight` 创建新会话：
+
+```bash
+mcode --mode lightweight "解释 DNS 缓存的工作原理。"
+mcode exec --mode lightweight "概述 CAP 定理。"
+```
+
+轻量模式只发送精简的对话系统提示词，不发送工具 schema，并从提供方上下文中省略工作区
+指令、Skills、memory 块、MCP schema 和完整环境块，因此不能检查或修改本地文件。需要编程或工具能力时，请使用
+`mcode --mode standard` 或 `mcode exec --mode standard` 创建新的标准会话；省略 `--mode`
+与标准模式完全一致。
+
+模式在根会话创建时固定，因此 `--mode lightweight` 不能与 `--session` 或 `--continue`
+同时使用。子代理/子会话不会继承轻量模式，`/compact` 仍使用标准压缩上下文，ACP 与桌面端
+会话也始终使用标准模式。重新打开轻量会话时会保留该模式，并在 TUI 状态栏显示
+`Lightweight`；从轻量模式启动的 TUI 打开标准会话时仍保持标准模式，且不显示该标记。
 
 ### 继续之前的工作
 
@@ -213,13 +253,6 @@ profile 使用 `~/.minimax-<profile>`；`MINIMAX_DATA_DIR` 或 `MAVIS_DATA_DIR` 
 
 账号、更新、反馈与诊断能力也在。托管工具需要网络和相应授权，详细边界见 [能力与服务边界](docs/tui-capabilities.md)。
 
-## 试一试
-
-在示例目录启动 TUI，输入：
-
-> Read clamp.mjs and clamp.test.mjs. Run node --test to reproduce the failure, fix clamp without changing the tests, then run the tests again.
-
-这个 [可复现的小项目](examples/clamp) 就是上方演示使用的任务。[更多示例](docs/examples.md) 包括切换模型、执行真实搜索，以及使用自己的图片输入。
 
 ## 从源码构建
 
@@ -241,7 +274,7 @@ pnpm mcode
 node /absolute/path/to/minimax-code/dist/cli.js
 ```
 
-本仓库目标为 **0.4.12 源码预览**。安装已发布的包与构建本仓库是两条独立路径，版本一致不代表构建来源完全相同，详见[版本与证据基线](docs/open-source-status.md#version-and-evidence-baseline)。
+本仓库目标为 **0.6.3 源码预览**。安装已发布的包与构建本仓库是两条独立路径，版本一致不代表构建来源完全相同，详见[版本与证据基线](docs/open-source-status.md#version-and-evidence-baseline)。
 
 ## 文档与贡献
 
@@ -262,6 +295,18 @@ node /absolute/path/to/minimax-code/dist/cli.js
 [下载 macOS 或 Windows 桌面版](https://agent.minimaxi.com/download) · [报告问题或提问](https://github.com/MiniMax-AI/minimax-code/issues/new/choose)
 
 本仓库也承接 MiniMax Code 桌面版的问题反馈。公开源码范围为终端 TUI、Headless CLI 和 ACP，不包含桌面应用源码。提交 Issue 时请选择对应产品。桌面版问题请注明应用版本、操作系统，以及「设置 → 通用 → 上传日志」生成的日志上传 ID（如可用）；CLI 问题请注明 `mcode --version`、运行入口与最小复现。报告中请移除凭据和私人项目内容。
+
+## 反馈与联系我们
+
+| 渠道 | 适用场景 |
+| --- | --- |
+| [GitHub Issues](https://github.com/MiniMax-AI/minimax-code/issues/new/choose) | 公开报告 CLI 或桌面版的 Bug、提出功能建议与使用问题。 |
+| [MiniMaxCode@minimax.io](mailto:MiniMaxCode@minimax.io) | 一般反馈与支持咨询。 |
+| [security.mcode@minimax.io](mailto:security.mcode@minimax.io) | 私密报告安全漏洞。请通过此邮箱发送复现步骤和脱敏证据，详见[安全报告指南](SECURITY.md)。 |
+| [Discord](https://minimax.io/discord) | 社区交流与反馈。 |
+| [飞书反馈群二维码](https://cdn.hailuoai.com/hailuo-video-web/public_assets/minimax_code_feishu_group_url.png) | 中文社区反馈。使用飞书扫码，或在中文版桌面应用的用户菜单 → **联系我们 → 飞书** 中查看二维码。 |
+
+也可关注 [MiniMax 的 X 账号](https://x.com/MiniMaxAgent) 获取动态。请勿在公开 Issue 或社区聊天中发布漏洞细节、凭据和私人项目内容。
 
 ## 许可
 
